@@ -3,20 +3,22 @@ import { H5pImage } from "./h5p-image";
 
 export class H5PDialogCardsPapiJoContent extends H5pContent {
   public title: string;
-  public mode: "normal" | "repetition";
   public description: string;
+  public enableCategories: boolean;
   public dialogs: {
     text: string;
     answer: string;
     image?: H5pImage;
     imageAltText?: string;
+    image2?: H5pImage;
+    imageAltText2?: string;
   }[];
   public behaviour: {
-    enableRetry?: boolean;
-    disableBackwardsNavigation?: boolean;
-    scaleTextNotCard: boolean;
-    randomCards: boolean;
-    maxProficiency?: 3 | 4 | 5 | 6 | 7;
-    quickProgression?: boolean;
+    playMode: "normalMode" | "matchMode" | "matchRepetition" | "selfCorrectionMode";
+		enableRetry: boolean;
+		scaleTextNotCard: boolean;
+    noTextOnCards: boolean;
+    cardsOrderChoice: string,
+    cardsSideChoice:  string
   };
 }

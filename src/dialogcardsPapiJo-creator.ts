@@ -11,7 +11,7 @@ export class DialogCardsPapiJoCreator extends ContentCreator<H5PDialogCardsPapiJ
       back: string;
       image?: string;
     }>,
-    private mode: "repetition" | "normal"
+    private playMode: "normalMode" | "matchMode" | "matchRepetition" | "selfCorrectionMode"
   ) {
     super(h5pPackage);
   }
@@ -58,17 +58,20 @@ export class DialogCardsPapiJoCreator extends ContentCreator<H5PDialogCardsPapiJ
           console.error(exc);
           card["image"] = undefined;
         }
-      }
+      };
       contentObject.dialogs.push(card);
     }
-    contentObject.mode = this.mode;
+    
   }
 
   protected addSettings(contentObject: H5PDialogCardsPapiJoContent) {
     contentObject.behaviour = {
-      disableBackwardsNavigation: false,
-      randomCards: true,
-      scaleTextNotCard: false
+    	playMode: this.playMode,
+      enableRetry: true,
+      scaleTextNotCard: false,
+			noTextOnCards: false,
+      cardsOrderChoice: "normal",
+      cardsSideChoice:  "frontFirst"
     };
   }
 
