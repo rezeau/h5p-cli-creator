@@ -4,12 +4,13 @@
   "description": "Mass creates h5p packages from content files",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc"
+    "build": "tsc",
+    "watch": "tsc --watch"
   },
   "author": "Sebastian Rettig",
   "license": "MIT",
   "dependencies": {
-    "axios": "^0.25.0",
+    "axios": "^1.13.2",
     "buffer-image-size": "^0.6.4",
     "chalk": "^5.0.0",
     "fs-extra": "^10.0.0",
@@ -22,11 +23,11 @@
     "yargs": "^17.3.1"
   },
   "devDependencies": {
-    "@types/mime-types": "^2.1.1",
-    "@types/yargs": "^17.0.8",
     "@types/fs-extra": "^9.0.13",
     "@types/jszip": "^3.4.0",
+    "@types/mime-types": "^2.1.1",
     "@types/node": "^17.0.14",
-    "@types/papaparse": "^5.3.2"
+    "@types/papaparse": "^5.3.2",
+    "@types/yargs": "^17.0.8"
   }
 }
