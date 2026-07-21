@@ -5,15 +5,17 @@ import * as path from "path";
 
 import { DialogCardsPapiJoCreator } from "./dialogcardsPapiJo-creator";
 import { H5pPackage } from "./h5p-package";
+import { DialogCardsPapiJoPlayMode } from "./models/h5p-dialog-cardsPapiJo-content";
 
 /**
- * This is the yargs module for dialogcards PapiJo.
+ * This is the yargs module for Dialog Cards Papi Jo.
  */
 export class DialogCardsPapiJoModule implements yargs.CommandModule {
   public command = "dialogcardsPapiJo <input> <output>";
   public describe =
-    "Converts csv input to h5p dialog cards PapiJo content. The headings for the columns \
-                     should be: front, back, [image] (image is the URL of an image to include)";
+    "Converts CSV input to H5P Dialog Cards Papi Jo content. The headings should be: \
+                     front, [back], [image], [imageAltText], [image2], [imageAltText2], \
+                     [audio], [audio2], [tipFront], [tipBack], [categories]";
   public builder = (y: yargs.Argv) =>
     y
       .positional("input", { describe: "csv input file" })
@@ -36,7 +38,14 @@ export class DialogCardsPapiJoModule implements yargs.CommandModule {
         describe: "mode of the content",
         default: "normalMode",
         type: "string",
-        choices: ["normalMode", "matchMode", "matchRepetition", "selfCorrectionMode"]
+        choices: [
+          "normalMode",
+          "browseSideBySide",
+          "matchMode",
+          "matchRepetition",
+          "selfCorrectionMode",
+          "user",
+        ]
       });
 
   public handler = async argv => {
@@ -58,9 +67,9 @@ export class DialogCardsPapiJoModule implements yargs.CommandModule {
     encoding: BufferEncoding,
     delimiter: string,
     language: string,
-    playMode: "normalMode" | "matchMode" | "matchRepetition" | "selfCorrectionMode"
+    playMode: DialogCardsPapiJoPlayMode
   ): Promise<void> {
-    console.log("Creating module content type.");
+    console.log("Creating Dialog Cards Papi Jo content type.");
     csvfile = csvfile.trim();
     outputfile = outputfile.trim();
 
@@ -72,7 +81,7 @@ export class DialogCardsPapiJoModule implements yargs.CommandModule {
     });
     
     let h5pPackage = await H5pPackage.createFromHub(
-      "H5P.DialogCardsPapiJo",
+      "H5P.DialogcardsPapiJo",
       language
     );
     let creator = new DialogCardsPapiJoCreator(
@@ -83,6 +92,6 @@ export class DialogCardsPapiJoModule implements yargs.CommandModule {
     );
     await creator.create();
     creator.setTitle(title);
-    creator.savePackage(outputfile);
+    await creator.savePackage(outputfile);
   }
 }

@@ -71,7 +71,7 @@ export class DialogCardsModule implements yargs.CommandModule {
       skipEmptyLines: true,
     });
     let h5pPackage = await H5pPackage.createFromHub(
-      "H5P.DialogCards",
+      "H5P.Dialogcards",
       language
     );
     let creator = new DialogCardsCreator(
@@ -82,6 +82,6 @@ export class DialogCardsModule implements yargs.CommandModule {
     );
     await creator.create();
     creator.setTitle(title);
-    creator.savePackage(outputfile);
+    await creator.savePackage(outputfile);
   }
 }

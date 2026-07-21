@@ -78,6 +78,6 @@ export class FlashcardsModule implements yargs.CommandModule {
       path.dirname(csvfile)
     );
     await flashcardsCreator.create();
-    flashcardsCreator.savePackage(outputfile);
+    await flashcardsCreator.savePackage(outputfile);
   }
 }

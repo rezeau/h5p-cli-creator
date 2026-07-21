@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "description": "Mass creates h5p packages from content files",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "tsc && node tests/run-tests.js",
     "build": "tsc",
     "watch": "tsc --watch"
   },

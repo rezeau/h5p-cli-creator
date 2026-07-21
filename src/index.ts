@@ -1,15 +1,17 @@
-#!usr/bin/env node
+#!/usr/bin/env node
 
 import * as yargs from "yargs";
 import { DialogCardsModule } from "./dialogcards-module";
 import { DialogCardsPapiJoModule } from "./dialogcardsPapiJo-module";
 import { FlashcardsModule } from "./flashcards-module";
+import { GuessItModule } from "./guessit-module";
 
 try {
   yargs
     .command(new FlashcardsModule())
     .command(new DialogCardsModule())
     .command(new DialogCardsPapiJoModule())
+    .command(new GuessItModule())
     .help().argv;
 } catch (error) {
   console.error(error);

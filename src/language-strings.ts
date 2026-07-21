@@ -18,14 +18,39 @@ export class LanguageStrings {
   public static async fromLibrary(h5pPackage: jszip, libraryName: string, majorVersion: number,
                                   minorVersion: number, languageCode: string = "en"): Promise<LanguageStrings> {
     const libraryDirectory = `${libraryName}-${majorVersion}.${minorVersion}`;
-    const semanticsEntry = await h5pPackage.file(libraryDirectory + "/semantics.json").async("text");
+    const semanticsPath = LanguageStrings.findEntry(
+      h5pPackage,
+      libraryDirectory + "/semantics.json"
+    );
+    if (!semanticsPath) {
+      throw new Error(
+        `Semantics file not found for library ${libraryName} ${majorVersion}.${minorVersion}.`
+      );
+    }
+    const semanticsEntry = await h5pPackage.file(semanticsPath).async("text");
 
     let langObject: object = null;
     if (languageCode !== "en") {
-      const langEntry = await h5pPackage.file(libraryDirectory + `/language/${languageCode}.json`).async("text");
+      const languagePath = LanguageStrings.findEntry(
+        h5pPackage,
+        libraryDirectory + `/language/${languageCode}.json`
+      );
+      if (!languagePath) {
+        throw new Error(
+          `Language file ${languageCode}.json not found for library ${libraryName} ${majorVersion}.${minorVersion}.`
+        );
+      }
+      const langEntry = await h5pPackage.file(languagePath).async("text");
       langObject = JSON.parse(langEntry);
     }
     return new LanguageStrings(JSON.parse(semanticsEntry), langObject);
+  }
+
+  private static findEntry(h5pPackage: jszip, expectedPath: string): string {
+    const normalizedExpectedPath = expectedPath.toLowerCase();
+    return Object.keys(h5pPackage.files).find(
+      entry => entry.toLowerCase() === normalizedExpectedPath
+    );
   }
 
   private constructor(private semantics: object, private languageFile = null) { }
@@ -40,11 +65,11 @@ export class LanguageStrings {
       if (this.semantics[key].name === undefined || this.semantics[key].name !== name) {
         continue;
       }
-      if (this.languageFile === null || this.languageFile.semantics[key].default === undefined) {
-        return this.semantics[key].default;
-      } else {
-        return this.languageFile.semantics[key].default;
-      }
+      const translatedSemantic =
+        this.languageFile && this.languageFile.semantics
+          ? this.languageFile.semantics[key]
+          : undefined;
+      return this.getDefaultValue(this.semantics[key], translatedSemantic);
     }
   }
 
@@ -52,8 +77,8 @@ export class LanguageStrings {
    * Gets alls language strings
    * @returns language strings including their name and value
    */
-  public getAll(): Array<{ name: string, value: string }> {
-    const list: Array<{ name: string, value: string }> = new Array();
+  public getAll(): Array<{ name: string, value: any }> {
+    const list: Array<{ name: string, value: any }> = new Array();
 
     for (const key in this.semantics) {
       if (this.semantics[key].name !== undefined && this.semantics[key].common === true) {
@@ -76,5 +101,27 @@ export class LanguageStrings {
       }
       content[str.name] = str.value;
     }
+  }
+
+  private getDefaultValue(semantic: any, translatedSemantic?: any): any {
+    if (semantic.type === "group" && Array.isArray(semantic.fields)) {
+      const value = {};
+      for (const key in semantic.fields) {
+        const field = semantic.fields[key];
+        const translatedField =
+          translatedSemantic && translatedSemantic.fields
+            ? translatedSemantic.fields[key]
+            : undefined;
+        const fieldValue = this.getDefaultValue(field, translatedField);
+        if (fieldValue !== undefined) {
+          value[field.name] = fieldValue;
+        }
+      }
+      return value;
+    }
+    if (translatedSemantic && translatedSemantic.default !== undefined) {
+      return translatedSemantic.default;
+    }
+    return semantic.default;
   }
 }
