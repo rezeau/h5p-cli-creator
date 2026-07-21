@@ -24,7 +24,11 @@ export class H5pImage extends H5pContent {
       throw new Error(`Error: Could not download image at ${url}!`);
     }
     let i = new H5pImage();
-    i.mime = response.headers["content-type"];
+    const contentType = response.headers["content-type"];
+    i.mime =
+      typeof contentType === "string"
+        ? contentType
+        : "application/octet-stream";
     i.copyright.license = "U";
     const buffer = toBuffer(response.data);
     const dim = imageSize(buffer);

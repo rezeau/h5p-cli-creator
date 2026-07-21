@@ -21,9 +21,10 @@ export class H5pAudio extends H5pContent {
       throw new Error(`Error: Could not download audio at ${url}!`);
     }
     let a = new H5pAudio();
-    a.mime = response.headers["content-type"].replace(
-      "audio/mp3",
-      "audio/mpeg"
+    const contentType = response.headers["content-type"];
+    a.mime = String(contentType ?? "application/octet-stream").replace(
+      "application/ogg",
+      "audio/ogg"
     );
     a.copyright.license = "U";
     return {
