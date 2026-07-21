@@ -241,6 +241,21 @@ export class H5pPackage {
       libInfo.minorVersion,
       language
     );
+    this.removeLibraryDevelopmentArtifacts(libInfo);
+  }
+
+  private removeLibraryDevelopmentArtifacts(
+    library: { name: string; majorVersion: number; minorVersion: number }
+  ): void {
+    if (library.name.toLowerCase() !== "h5p.guessit") {
+      return;
+    }
+
+    const libraryDirectory =
+      `${library.name}-${library.majorVersion}.${library.minorVersion}`;
+    this.packageZip.remove(`${libraryDirectory}/tests`);
+    this.packageZip.remove(`${libraryDirectory}/AGENTS.md`);
+    this.packageZip.remove(`${libraryDirectory}/WORDLE-FRENCH-ACCENTS.md`);
   }
 
   private async createMetadataFromLibraryBundle(): Promise<any> {

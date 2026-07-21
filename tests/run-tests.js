@@ -63,6 +63,20 @@ function assertDependency(metadata, machineName, majorVersion, minorVersion) {
   assert.strictEqual(String(dependency.minorVersion), String(minorVersion));
 }
 
+function assertGuessItDevelopmentArtifactsAbsent(zip) {
+  const entries = Object.keys(zip.files);
+  assert.strictEqual(
+    entries.some((entry) => entry.startsWith("H5P.GuessIt-1.6/tests/")),
+    false,
+    "GuessIt output must not contain its library test directory"
+  );
+  assert.strictEqual(zip.file("H5P.GuessIt-1.6/AGENTS.md"), null);
+  assert.strictEqual(
+    zip.file("H5P.GuessIt-1.6/WORDLE-FRENCH-ACCENTS.md"),
+    null
+  );
+}
+
 async function testFlashcards(tempPath) {
   const outputPath = path.join(tempPath, "flashcards.h5p");
   runCli([
@@ -273,6 +287,7 @@ async function testLibraryBundle(tempPath) {
   assert.ok(zip.file("H5P.GuessIt-1.6/library.json"));
   assert.ok(zip.file("H5P.Timer-0.4/library.json"));
   assert.ok(zip.file("H5P.Question-1.5/library.json"));
+  assertGuessItDevelopmentArtifactsAbsent(zip);
 
 }
 
@@ -302,6 +317,7 @@ async function testGuessItSentences(tempPath) {
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
   assertDependency(metadata, "H5P.GuessIt", 1, 6);
   assert.ok(zip.file("H5P.GuessIt-1.6/library.json"));
+  assertGuessItDevelopmentArtifactsAbsent(zip);
 
   assert.strictEqual(content.info, false);
   assert.strictEqual(content.description, "Guess the imported sentences");
@@ -353,6 +369,7 @@ async function testGuessItWordle(tempPath) {
 
   assert.strictEqual(metadata.title, "Regression GuessIt Wordle");
   assertDependency(metadata, "H5P.GuessIt", 1, 6);
+  assertGuessItDevelopmentArtifactsAbsent(zip);
   assert.strictEqual(content.wordle, true);
   assert.deepStrictEqual(content.questions, []);
   assert.strictEqual(content.questionsW.length, 2);
