@@ -8,7 +8,7 @@ import {
   GuessItCreatorOptions,
   GuessItCsvRow,
 } from "./guessit-creator";
-import { H5pPackage } from "./h5p-package";
+import { H5pPackage, H5pPackageMode } from "./h5p-package";
 import { GuessItMode } from "./models/h5p-guessit-content";
 
 export class GuessItModule implements yargs.CommandModule {
@@ -75,6 +75,13 @@ export class GuessItModule implements yargs.CommandModule {
         default: "correct",
         describe: "when attached audio controls are displayed",
         type: "string",
+      })
+      .option("package-mode", {
+        choices: ["full", "minimal"],
+        default: "full",
+        describe:
+          "output package: full includes libraries; minimal omits all libraries and requires every h5p.json dependency to be preinstalled",
+        type: "string",
       });
 
   public handler = async (argv) => {
@@ -95,7 +102,8 @@ export class GuessItModule implements yargs.CommandModule {
       argv.e,
       argv.d,
       argv.l,
-      options
+      options,
+      argv["package-mode"]
     );
   };
 
@@ -106,7 +114,8 @@ export class GuessItModule implements yargs.CommandModule {
     encoding: BufferEncoding,
     delimiter: string,
     language: string,
-    options: GuessItCreatorOptions
+    options: GuessItCreatorOptions,
+    packageMode: H5pPackageMode
   ): Promise<void> {
     console.log("Creating GuessIt content type.");
     csvfile = csvfile.trim();
@@ -154,7 +163,7 @@ export class GuessItModule implements yargs.CommandModule {
     );
     await creator.create();
     creator.setTitle(title);
-    await creator.savePackage(outputfile);
+    await creator.savePackage(outputfile, packageMode);
   }
 
   private normalizeAndValidateRow(

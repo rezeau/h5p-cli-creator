@@ -4,7 +4,7 @@ import * as yargs from "yargs";
 import * as path from "path";
 
 import { DialogCardsPapiJoCreator } from "./dialogcardsPapiJo-creator";
-import { H5pPackage } from "./h5p-package";
+import { H5pPackage, H5pPackageMode } from "./h5p-package";
 import { DialogCardsPapiJoPlayMode } from "./models/h5p-dialog-cardsPapiJo-content";
 
 /**
@@ -46,6 +46,13 @@ export class DialogCardsPapiJoModule implements yargs.CommandModule {
           "selfCorrectionMode",
           "user",
         ]
+      })
+      .option("package-mode", {
+        choices: ["full", "minimal"],
+        default: "full",
+        describe:
+          "output package: full includes libraries; minimal omits all libraries and requires every h5p.json dependency to be preinstalled",
+        type: "string"
       });
 
   public handler = async argv => {
@@ -56,7 +63,8 @@ export class DialogCardsPapiJoModule implements yargs.CommandModule {
       argv.e,
       argv.d,
       argv.l,
-      argv.m
+      argv.m,
+      argv["package-mode"]
     );
   };
 
@@ -67,7 +75,8 @@ export class DialogCardsPapiJoModule implements yargs.CommandModule {
     encoding: BufferEncoding,
     delimiter: string,
     language: string,
-    playMode: DialogCardsPapiJoPlayMode
+    playMode: DialogCardsPapiJoPlayMode,
+    packageMode: H5pPackageMode
   ): Promise<void> {
     console.log("Creating Dialog Cards Papi Jo content type.");
     csvfile = csvfile.trim();
@@ -92,6 +101,6 @@ export class DialogCardsPapiJoModule implements yargs.CommandModule {
     );
     await creator.create();
     creator.setTitle(title);
-    await creator.savePackage(outputfile);
+    await creator.savePackage(outputfile, packageMode);
   }
 }

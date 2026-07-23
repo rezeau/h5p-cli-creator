@@ -1,7 +1,6 @@
 # h5p-cli-creator
 
 This is a command line utility that allows you to mass create H5P content from input files using the command line. It is written in TypeScript and runs on NodeJS, meaning it's platform independent. It supports *Flashcards*, *Dialog Cards*, *Dialog Cards Papi Jo*, and *GuessIt*. You can use the infrastructure provided here to add functionality for other content types. Pull requests are welcomed!
-Added H5P Dialog Cards Papi Jo creator APRIL 2021-OCT 2022. https://github.com/rezeau/h5p-cli-creator
 
 ## Run
 * Install [NodeJS](https://nodejs.org/)
@@ -14,6 +13,29 @@ Added H5P Dialog Cards Papi Jo creator APRIL 2021-OCT 2022. https://github.com/r
 * `node ./dist/index.js dialogcards --help` to get help for creating Dialog Cards
 * `node ./dist/index.js dialogcardsPapiJo --help` to get help for creating Dialog Cards Papi Jo
 * `node ./dist/index.js guessit --help` to get help for creating GuessIt activities
+
+## CSV input file encoding
+
+All input CSV files should be saved as **UTF-8 without BOM**. A UTF-8 byte order mark (BOM) can become part of the first column heading and prevent the importer from recognizing that column correctly.
+
+When exporting CSV from a spreadsheet or text editor, select an option named `UTF-8`, `UTF-8 without BOM`, or `UTF-8 (no BOM)`. Avoid options explicitly named `UTF-8 with BOM` or `UTF-8-BOM`.
+
+## Full and minimal H5P packages
+
+Every command supports:
+
+* `--package-mode=full` — includes the content and all H5P libraries. This is the default and preserves the previous behavior.
+* `--package-mode=minimal` — includes only `h5p.json` and the `content/` folder, including any generated `content/images/` and `content/audios/` files.
+
+> **IMPORTANT LIMITATION:** A minimal package is not self-contained. The destination platform must already have every library and matching major/minor version declared in `h5p.json`. If any dependency is missing, the minimal package will not import or run correctly.
+
+This is especially important for the custom `H5P.DialogcardsPapiJo` and `H5P.GuessIt` libraries. Install a full package or the appropriate library bundle on the destination platform before importing minimal packages. Use full mode when transferring content to an unknown platform, installing a content type for the first time, or creating a portable archive.
+
+Minimal mode keeps the complete `preloadedDependencies` list in `h5p.json`; only the physical library directories are omitted. The command also prints the dependency warning whenever minimal mode is used.
+
+Example:
+
+`node ./dist/index.js guessit ./tests/fixtures/guessit-wordle-regression.csv ./guessit-minimal.h5p --mode=wordle --package-mode=minimal`
 
 ## Example calls
 `node ./dist/index.js flashcards ./tests/flash1.csv ./outputfile.h5p -l=de -t="Meine Karteikarten" --description="\"Schreibe die Übersetzungen in das Eingabefeld.\""`
@@ -32,7 +54,7 @@ Reads the file `h6c4.csv` in the `tests` directory and outputs a h5p file with t
 
 Creates sentence-mode `H5P.GuessIt` 1.6 content. To create a Wordle-mode activity instead, use `--mode=wordle`, for example:
 
-`node ./dist/index.js guessit ./tests/fixtures/guessit-wordle.csv ./guessit-wordle.h5p -n="Guess the words" --mode=wordle --max-tries=8`
+`node ./dist/index.js guessit ./tests/fixtures/guessit-wordle-regression.csv ./guessit-wordle.h5p -n="Guess the words" --mode=wordle --max-tries=8`
 
 ### GuessIt CSV columns
 
@@ -61,7 +83,7 @@ This command creates the custom `H5P.GuessIt` content type. It does not create t
 
 ### Dialog Cards Papi Jo CSV columns
 
-Dialog Cards Papi Jo 1.17 remains compatible with the original CSV structure:
+Dialog Cards Papi Jo 1.17.1 remains compatible with the original CSV structure:
 
 ```csv
 front;back;image

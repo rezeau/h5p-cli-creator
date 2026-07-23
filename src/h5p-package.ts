@@ -28,6 +28,8 @@ interface H5pLibraryRecord {
   definition: H5pLibraryDefinition;
 }
 
+export type H5pPackageMode = "full" | "minimal";
+
 /**
  * H5P Package
  */
@@ -107,10 +109,31 @@ export class H5pPackage {
    * @param path
    * @returns
    */
-  public async savePackage(path: string): Promise<void> {
-    const file = await this.packageZip.generateAsync({ type: "nodebuffer" });
+  public async savePackage(
+    path: string,
+    packageMode: H5pPackageMode = "full"
+  ): Promise<void> {
+    if (packageMode !== "full" && packageMode !== "minimal") {
+      throw new Error(
+        `Invalid H5P package mode "${packageMode}". Use "full" or "minimal".`
+      );
+    }
+
+    const outputPackage =
+      packageMode === "minimal"
+        ? await this.createMinimalOutputPackage()
+        : this.packageZip;
+    if (packageMode === "minimal") {
+      console.warn(
+        "WARNING: Creating a minimal H5P package without libraries. " +
+          "The destination platform must already have every library and " +
+          "major/minor version declared in h5p.json, or the package will not import."
+      );
+    }
+
+    const file = await outputPackage.generateAsync({ type: "nodebuffer" });
     fs.writeFileSync(path, file);
-    console.log(`Stored H5P package at ${path}.`);
+    console.log(`Stored ${packageMode} H5P package at ${path}.`);
   }
 
   /**
@@ -256,6 +279,39 @@ export class H5pPackage {
     this.packageZip.remove(`${libraryDirectory}/tests`);
     this.packageZip.remove(`${libraryDirectory}/AGENTS.md`);
     this.packageZip.remove(`${libraryDirectory}/WORDLE-FRENCH-ACCENTS.md`);
+  }
+
+  private async createMinimalOutputPackage(): Promise<jszip> {
+    const minimalPackage = new jszip();
+    const requiredEntries = ["h5p.json", "content/content.json"];
+
+    for (const requiredEntry of requiredEntries) {
+      if (!this.packageZip.file(requiredEntry)) {
+        throw new Error(
+          `Cannot create a minimal H5P package because ${requiredEntry} is missing.`
+        );
+      }
+    }
+
+    for (const entryName of Object.keys(this.packageZip.files)) {
+      if (
+        entryName !== "h5p.json" &&
+        !entryName.startsWith("content/")
+      ) {
+        continue;
+      }
+      const entry = this.packageZip.file(entryName);
+      if (!entry) {
+        continue;
+      }
+      minimalPackage.file(
+        entryName,
+        await entry.async("nodebuffer"),
+        { createFolders: false }
+      );
+    }
+
+    return minimalPackage;
   }
 
   private async createMetadataFromLibraryBundle(): Promise<any> {

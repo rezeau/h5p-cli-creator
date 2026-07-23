@@ -4,7 +4,7 @@ import * as yargs from "yargs";
 import * as path from "path";
 
 import { DialogCardsCreator } from "./dialogcards-creator";
-import { H5pPackage } from "./h5p-package";
+import { H5pPackage, H5pPackageMode } from "./h5p-package";
 
 /**
  * This is the yargs module for dialogcards.
@@ -37,6 +37,13 @@ export class DialogCardsModule implements yargs.CommandModule {
         default: "repetition",
         type: "string",
         choices: ["repetition", "normal"],
+      })
+      .option("package-mode", {
+        choices: ["full", "minimal"],
+        default: "full",
+        describe:
+          "output package: full includes libraries; minimal omits all libraries and requires every h5p.json dependency to be preinstalled",
+        type: "string",
       });
 
   public handler = async (argv) => {
@@ -47,7 +54,8 @@ export class DialogCardsModule implements yargs.CommandModule {
       argv.e,
       argv.d,
       argv.l,
-      argv.m
+      argv.m,
+      argv["package-mode"]
     );
   };
 
@@ -58,7 +66,8 @@ export class DialogCardsModule implements yargs.CommandModule {
     encoding: BufferEncoding,
     delimiter: string,
     language: string,
-    mode: "repetition" | "normal"
+    mode: "repetition" | "normal",
+    packageMode: H5pPackageMode
   ): Promise<void> {
     console.log("Creating module content type.");
     csvfile = csvfile.trim();
@@ -82,6 +91,6 @@ export class DialogCardsModule implements yargs.CommandModule {
     );
     await creator.create();
     creator.setTitle(title);
-    await creator.savePackage(outputfile);
+    await creator.savePackage(outputfile, packageMode);
   }
 }

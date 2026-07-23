@@ -77,6 +77,38 @@ function assertGuessItDevelopmentArtifactsAbsent(zip) {
   );
 }
 
+async function assertMinimalPackage(zip, expectedContentFiles = []) {
+  const entries = Object.keys(zip.files);
+  const unexpectedEntries = entries.filter(
+    (entry) =>
+      entry !== "h5p.json" &&
+      entry !== "content/" &&
+      !entry.startsWith("content/")
+  );
+  assert.deepStrictEqual(
+    unexpectedEntries,
+    [],
+    `Minimal package contains unexpected entries: ${unexpectedEntries.join(", ")}`
+  );
+  assert.strictEqual(
+    entries.some((entry) => /\/library\.json$/i.test(entry)),
+    false,
+    "Minimal package must not contain H5P libraries"
+  );
+
+  const metadata = await readJson(zip, "h5p.json");
+  await readJson(zip, "content/content.json");
+  assert.ok(
+    metadata.preloadedDependencies.some(
+      (dependency) => dependency.machineName === metadata.mainLibrary
+    ),
+    "Minimal h5p.json must retain the main library dependency"
+  );
+  for (const contentFile of expectedContentFiles) {
+    assert.ok(zip.file(contentFile), `Expected ${contentFile} in minimal package`);
+  }
+}
+
 async function testFlashcards(tempPath) {
   const outputPath = path.join(tempPath, "flashcards.h5p");
   runCli([
@@ -87,6 +119,8 @@ async function testFlashcards(tempPath) {
     "Regression Flashcards",
     "--description",
     "Regression description",
+    "--package-mode",
+    "full",
   ], tempPath);
 
   const zip = await loadPackage(outputPath);
@@ -353,7 +387,7 @@ async function testGuessItWordle(tempPath) {
   const outputPath = path.join(tempPath, "guessit-wordle.h5p");
   runCli([
     "guessit",
-    path.join(fixturesPath, "guessit-wordle.csv"),
+    path.join(fixturesPath, "guessit-wordle-regression.csv"),
     outputPath,
     "-n",
     "Regression GuessIt Wordle",
@@ -380,6 +414,86 @@ async function testGuessItWordle(tempPath) {
   assert.strictEqual(content.behaviour.maxTries, 8);
   assert.strictEqual(content.behaviour.listGuessedSentences, true);
   assert.ok(zip.file("content/audios/0.mp3"));
+}
+
+async function testMinimalPackages(tempPath) {
+  const cases = [
+    {
+      name: "Flashcards",
+      output: "flashcards-minimal.h5p",
+      args: [
+        "flashcards",
+        path.join(fixturesPath, "flashcards-local.csv"),
+      ],
+      expectedContentFiles: ["content/images/0.jpg"],
+    },
+    {
+      name: "Dialog Cards",
+      output: "dialogcards-minimal.h5p",
+      args: [
+        "dialogcards",
+        path.join(fixturesPath, "dialogcards-local.csv"),
+      ],
+      expectedContentFiles: [
+        "content/images/0.jpg",
+        "content/audios/0.mp3",
+      ],
+    },
+    {
+      name: "Dialog Cards Papi Jo",
+      output: "dialogcards-papijo-minimal.h5p",
+      args: [
+        "dialogcardsPapiJo",
+        path.join(fixturesPath, "dialogcards-papijo-local.csv"),
+      ],
+      expectedContentFiles: [
+        "content/images/0.jpg",
+        "content/images/1.jpg",
+        "content/audios/0.mp3",
+        "content/audios/1.mp3",
+      ],
+    },
+    {
+      name: "GuessIt",
+      output: "guessit-minimal.h5p",
+      args: [
+        "guessit",
+        path.join(fixturesPath, "guessit-wordle-regression.csv"),
+        "--mode",
+        "wordle",
+      ],
+      expectedContentFiles: ["content/audios/0.mp3"],
+    },
+  ];
+
+  for (const testCase of cases) {
+    const outputPath = path.join(tempPath, testCase.output);
+    runCli(
+      [
+        ...testCase.args,
+        outputPath,
+        "--package-mode",
+        "minimal",
+      ],
+      tempPath
+    );
+    const zip = await loadPackage(outputPath);
+    await assertMinimalPackage(zip, testCase.expectedContentFiles);
+  }
+}
+
+async function testPackageModeValidation(tempPath) {
+  const outputPath = path.join(tempPath, "invalid-package-mode.h5p");
+  const output = runCliExpectFailure([
+    "flashcards",
+    path.join(fixturesPath, "flashcards-local.csv"),
+    outputPath,
+    "--package-mode",
+    "unsupported",
+  ], tempPath);
+
+  assert.match(output, /Invalid values|Choices:/);
+  assert.strictEqual(fs.existsSync(outputPath), false);
 }
 
 async function testGuessItValidation(tempPath) {
@@ -471,6 +585,8 @@ async function main() {
     await runTest("GuessIt cached library bundle loader", testLibraryBundle, tempPath);
     await runTest("GuessIt sentence importer", testGuessItSentences, tempPath);
     await runTest("GuessIt Wordle importer", testGuessItWordle, tempPath);
+    await runTest("Minimal packages for all importers", testMinimalPackages, tempPath);
+    await runTest("Package mode validation", testPackageModeValidation, tempPath);
     await runTest("GuessIt CSV validation", testGuessItValidation, tempPath);
     await runTest("Package validation errors", testPackageErrors, tempPath);
     console.log("All regression tests passed.");

@@ -4,7 +4,7 @@ import * as path from "path";
 import * as yargs from "yargs";
 
 import { FlashcardsCreator } from "./flashcards-creator";
-import { H5pPackage } from "./h5p-package";
+import { H5pPackage, H5pPackageMode } from "./h5p-package";
 
 /**
  * This is the yargs module for flashcards.
@@ -36,6 +36,13 @@ export class FlashcardsModule implements yargs.CommandModule {
         describe: "description of the content",
         default: "Write in the answers to the questions.",
         type: "string",
+      })
+      .option("package-mode", {
+        choices: ["full", "minimal"],
+        default: "full",
+        describe:
+          "output package: full includes libraries; minimal omits all libraries and requires every h5p.json dependency to be preinstalled",
+        type: "string",
       });
 
   public handler = async (argv) => {
@@ -46,7 +53,8 @@ export class FlashcardsModule implements yargs.CommandModule {
       argv.e,
       argv.d,
       argv.l,
-      argv.description
+      argv.description,
+      argv["package-mode"]
     );
   };
 
@@ -57,7 +65,8 @@ export class FlashcardsModule implements yargs.CommandModule {
     encoding: BufferEncoding,
     delimiter: string,
     language: string,
-    description: string
+    description: string,
+    packageMode: H5pPackageMode
   ): Promise<void> {
     console.log("Creating flashcards content type.");
     csvfile = csvfile.trim();
@@ -78,6 +87,6 @@ export class FlashcardsModule implements yargs.CommandModule {
       path.dirname(csvfile)
     );
     await flashcardsCreator.create();
-    await flashcardsCreator.savePackage(outputfile);
+    await flashcardsCreator.savePackage(outputfile, packageMode);
   }
 }

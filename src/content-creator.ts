@@ -1,4 +1,4 @@
-import { H5pPackage } from "./h5p-package";
+import { H5pPackage, H5pPackageMode } from "./h5p-package";
 import { H5pContent } from "./models/h5p-content";
 
 /**
@@ -35,8 +35,11 @@ export abstract class ContentCreator<T extends H5pContent> {
    * Stores the h5p package at the file specified.
    * @param path
    */
-  public async savePackage(path: string): Promise<void> {
-    await this.h5pPackage.savePackage(path);
+  public async savePackage(
+    path: string,
+    packageMode: H5pPackageMode = "full"
+  ): Promise<void> {
+    await this.h5pPackage.savePackage(path, packageMode);
   }
 
   /**
