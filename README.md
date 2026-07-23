@@ -2,6 +2,17 @@
 
 This is a command line utility that allows you to mass create H5P content from input files using the command line. It is written in TypeScript and runs on NodeJS, meaning it's platform independent. It supports *Flashcards*, *Dialog Cards*, *Dialog Cards Papi Jo*, and *GuessIt*. You can use the infrastructure provided here to add functionality for other content types. Pull requests are welcomed!
 
+## Node.js support
+
+This project supports Node.js 22 from version 22.13.0 onward and Node.js 24. Node.js 22 is the preferred version for local development and is recorded in `.nvmrc`.
+
+Check the active versions before installing or running the project:
+
+* `node --version`
+* `npm --version`
+
+If you use a Node version manager that supports `.nvmrc`, run `nvm use` from the repository directory to select Node.js 22. Run `npm install` or `npm ci` only while using one of the supported Node.js versions.
+
 ## Run
 * Install [NodeJS](https://nodejs.org/)
 * [clone this repository](https://help.github.com/articles/cloning-a-repository/) into a directory on your computer
