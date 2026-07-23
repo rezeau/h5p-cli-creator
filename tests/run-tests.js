@@ -9,12 +9,42 @@ const { H5pPackage } = require("../dist/h5p-package");
 const projectRoot = path.resolve(__dirname, "..");
 const cliPath = path.join(projectRoot, "dist", "index.js");
 const fixturesPath = path.join(__dirname, "fixtures");
+const imageFixturePath = path.join(__dirname, "image1.jpg");
+const audioFixturePath = path.join(__dirname, "sound.mp3");
 
-function runCli(args, cwd) {
+function assertTemporaryOutputPath(outputArchivePath) {
+  if (!outputArchivePath) {
+    return;
+  }
+  const relativePath = path.relative(
+    path.resolve(os.tmpdir()),
+    path.resolve(outputArchivePath)
+  );
+  assert.ok(
+    relativePath &&
+      !relativePath.startsWith(`..${path.sep}`) &&
+      relativePath !== ".." &&
+      !path.isAbsolute(relativePath),
+    `Test output must remain under the operating-system temporary directory: ${outputArchivePath}`
+  );
+}
+
+function createCliResult(result, outputArchivePath) {
+  assertTemporaryOutputPath(outputArchivePath);
+  return {
+    status: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    outputArchivePath,
+  };
+}
+
+function runCli(args, cwd, outputArchivePath) {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd: cwd || projectRoot,
     encoding: "utf8",
   });
+  const cliResult = createCliResult(result, outputArchivePath);
 
   if (result.status !== 0) {
     throw new Error(
@@ -27,9 +57,10 @@ function runCli(args, cwd) {
         .join("\n")
     );
   }
+  return cliResult;
 }
 
-function runCliExpectFailure(args, cwd) {
+function runCliExpectFailure(args, cwd, outputArchivePath) {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd: cwd || projectRoot,
     encoding: "utf8",
@@ -40,6 +71,10 @@ function runCliExpectFailure(args, cwd) {
     0,
     `Expected CLI to fail, but it exited successfully.\n${result.stdout}\n${result.stderr}`
   );
+  return createCliResult(result, outputArchivePath);
+}
+
+function combinedCliOutput(result) {
   return `${result.stdout}\n${result.stderr}`;
 }
 
@@ -52,6 +87,88 @@ async function readJson(zip, entryPath) {
   const entry = zip.file(entryPath);
   assert.ok(entry, `Expected ${entryPath} in generated package`);
   return JSON.parse(await entry.async("text"));
+}
+
+async function assertZipFileBytes(zip, entryPath, expectedBytes) {
+  const entry = zip.file(entryPath);
+  assert.ok(entry, `Expected ${entryPath} in generated package`);
+  const actualBytes = await entry.async("nodebuffer");
+  assert.deepStrictEqual(
+    actualBytes,
+    expectedBytes,
+    `Expected ${entryPath} to preserve the fixture bytes`
+  );
+}
+
+function expectedLibraryEntry(dependency) {
+  return (
+    `${dependency.machineName}-${dependency.majorVersion}.` +
+    `${dependency.minorVersion}/library.json`
+  );
+}
+
+async function assertFullPackage(packagePath, expectedMedia = {}) {
+  const zip = await loadPackage(packagePath);
+  const metadata = await readJson(zip, "h5p.json");
+  const content = await readJson(zip, "content/content.json");
+
+  assert.strictEqual(
+    typeof metadata.mainLibrary,
+    "string",
+    "Full package must declare a main library"
+  );
+  assert.ok(
+    Array.isArray(metadata.preloadedDependencies),
+    "Full package must declare preloaded dependencies"
+  );
+
+  const mainDependency = metadata.preloadedDependencies.find(
+    (dependency) =>
+      dependency.machineName.toLowerCase() ===
+      metadata.mainLibrary.toLowerCase()
+  );
+  assert.ok(
+    mainDependency,
+    `Expected main library ${metadata.mainLibrary} in preloadedDependencies`
+  );
+
+  const archiveEntries = new Map(
+    Object.keys(zip.files).map((entryName) => [
+      entryName.toLowerCase(),
+      entryName,
+    ])
+  );
+  for (const dependency of metadata.preloadedDependencies) {
+    const expectedEntry = expectedLibraryEntry(dependency);
+    const actualEntry = archiveEntries.get(expectedEntry.toLowerCase());
+    assert.ok(
+      actualEntry,
+      `Expected declared dependency ${dependency.machineName} ` +
+        `${dependency.majorVersion}.${dependency.minorVersion} at ${expectedEntry}`
+    );
+    const libraryDefinition = await readJson(zip, actualEntry);
+    assert.strictEqual(
+      libraryDefinition.machineName.toLowerCase(),
+      dependency.machineName.toLowerCase(),
+      `Expected ${actualEntry} to define ${dependency.machineName}`
+    );
+    assert.strictEqual(
+      String(libraryDefinition.majorVersion),
+      String(dependency.majorVersion),
+      `Expected ${actualEntry} to match the declared major version`
+    );
+    assert.strictEqual(
+      String(libraryDefinition.minorVersion),
+      String(dependency.minorVersion),
+      `Expected ${actualEntry} to match the declared minor version`
+    );
+  }
+
+  for (const [entryPath, expectedBytes] of Object.entries(expectedMedia)) {
+    await assertZipFileBytes(zip, entryPath, expectedBytes);
+  }
+
+  return { zip, metadata, content };
 }
 
 function assertDependency(metadata, machineName, majorVersion, minorVersion) {
@@ -77,7 +194,8 @@ function assertGuessItDevelopmentArtifactsAbsent(zip) {
   );
 }
 
-async function assertMinimalPackage(zip, expectedContentFiles = []) {
+async function assertMinimalPackage(packagePath, expectedMedia = {}) {
+  const zip = await loadPackage(packagePath);
   const entries = Object.keys(zip.files);
   const unexpectedEntries = entries.filter(
     (entry) =>
@@ -97,35 +215,42 @@ async function assertMinimalPackage(zip, expectedContentFiles = []) {
   );
 
   const metadata = await readJson(zip, "h5p.json");
-  await readJson(zip, "content/content.json");
+  const content = await readJson(zip, "content/content.json");
   assert.ok(
     metadata.preloadedDependencies.some(
       (dependency) => dependency.machineName === metadata.mainLibrary
     ),
     "Minimal h5p.json must retain the main library dependency"
   );
-  for (const contentFile of expectedContentFiles) {
-    assert.ok(zip.file(contentFile), `Expected ${contentFile} in minimal package`);
+  for (const [entryPath, expectedBytes] of Object.entries(expectedMedia)) {
+    await assertZipFileBytes(zip, entryPath, expectedBytes);
   }
+  return { zip, metadata, content };
 }
 
 async function testFlashcards(tempPath) {
   const outputPath = path.join(tempPath, "flashcards.h5p");
-  runCli([
-    "flashcards",
-    path.join(fixturesPath, "flashcards-local.csv"),
-    outputPath,
-    "-t",
-    "Regression Flashcards",
-    "--description",
-    "Regression description",
-    "--package-mode",
-    "full",
-  ], tempPath);
+  const cliResult = runCli(
+    [
+      "flashcards",
+      path.join(fixturesPath, "flashcards-local.csv"),
+      outputPath,
+      "-t",
+      "Regression Flashcards",
+      "--description",
+      "Regression description",
+      "--package-mode",
+      "full",
+    ],
+    tempPath,
+    outputPath
+  );
 
-  const zip = await loadPackage(outputPath);
-  const metadata = await readJson(zip, "h5p.json");
-  const content = await readJson(zip, "content/content.json");
+  assert.strictEqual(cliResult.status, 0);
+  assert.strictEqual(cliResult.outputArchivePath, outputPath);
+  const { zip, metadata, content } = await assertFullPackage(outputPath, {
+    "content/images/0.jpg": fs.readFileSync(imageFixturePath),
+  });
 
   assert.strictEqual(metadata.title, "Regression Flashcards");
   assert.strictEqual(metadata.mainLibrary, "H5P.Flashcards");
@@ -157,19 +282,25 @@ async function testFlashcards(tempPath) {
 
 async function testDialogCards(tempPath) {
   const outputPath = path.join(tempPath, "dialogcards.h5p");
-  runCli([
-    "dialogcards",
-    path.join(fixturesPath, "dialogcards-local.csv"),
-    outputPath,
-    "-n",
-    "Regression Dialog Cards",
-    "-m",
-    "normal",
-  ], tempPath);
+  const cliResult = runCli(
+    [
+      "dialogcards",
+      path.join(fixturesPath, "dialogcards-local.csv"),
+      outputPath,
+      "-n",
+      "Regression Dialog Cards",
+      "-m",
+      "normal",
+    ],
+    tempPath,
+    outputPath
+  );
 
-  const zip = await loadPackage(outputPath);
-  const metadata = await readJson(zip, "h5p.json");
-  const content = await readJson(zip, "content/content.json");
+  assert.strictEqual(cliResult.status, 0);
+  const { zip, metadata, content } = await assertFullPackage(outputPath, {
+    "content/images/0.jpg": fs.readFileSync(imageFixturePath),
+    "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+  });
 
   assert.strictEqual(metadata.title, "Regression Dialog Cards");
   assert.strictEqual(metadata.mainLibrary, "H5P.Dialogcards");
@@ -195,19 +326,22 @@ async function testDialogCards(tempPath) {
 
 async function testDialogCardsPapiJo(tempPath) {
   const outputPath = path.join(tempPath, "dialogcards-papijo.h5p");
-  runCli([
-    "dialogcardsPapiJo",
-    path.join(fixturesPath, "dialogcards-papijo-legacy.csv"),
-    outputPath,
-    "-n",
-    "Regression Dialog Cards Papi Jo",
-    "-m",
-    "selfCorrectionMode",
-  ], tempPath);
+  const cliResult = runCli(
+    [
+      "dialogcardsPapiJo",
+      path.join(fixturesPath, "dialogcards-papijo-legacy.csv"),
+      outputPath,
+      "-n",
+      "Regression Dialog Cards Papi Jo",
+      "-m",
+      "selfCorrectionMode",
+    ],
+    tempPath,
+    outputPath
+  );
 
-  const zip = await loadPackage(outputPath);
-  const metadata = await readJson(zip, "h5p.json");
-  const content = await readJson(zip, "content/content.json");
+  assert.strictEqual(cliResult.status, 0);
+  const { zip, metadata, content } = await assertFullPackage(outputPath);
 
   assert.strictEqual(metadata.title, "Regression Dialog Cards Papi Jo");
   assert.strictEqual(metadata.mainLibrary, "H5P.DialogcardsPapiJo");
@@ -259,19 +393,27 @@ async function testDialogCardsPapiJo(tempPath) {
 
 async function testDialogCardsPapiJoMedia(tempPath) {
   const outputPath = path.join(tempPath, "dialogcards-papijo-media.h5p");
-  runCli([
-    "dialogcardsPapiJo",
-    path.join(fixturesPath, "dialogcards-papijo-local.csv"),
-    outputPath,
-    "-n",
-    "Dialog Cards Papi Jo Media",
-    "-m",
-    "browseSideBySide",
-  ], tempPath);
+  const cliResult = runCli(
+    [
+      "dialogcardsPapiJo",
+      path.join(fixturesPath, "dialogcards-papijo-local.csv"),
+      outputPath,
+      "-n",
+      "Dialog Cards Papi Jo Media",
+      "-m",
+      "browseSideBySide",
+    ],
+    tempPath,
+    outputPath
+  );
 
-  const zip = await loadPackage(outputPath);
-  const metadata = await readJson(zip, "h5p.json");
-  const content = await readJson(zip, "content/content.json");
+  assert.strictEqual(cliResult.status, 0);
+  const { zip, metadata, content } = await assertFullPackage(outputPath, {
+    "content/images/0.jpg": fs.readFileSync(imageFixturePath),
+    "content/images/1.jpg": fs.readFileSync(imageFixturePath),
+    "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+    "content/audios/1.mp3": fs.readFileSync(audioFixturePath),
+  });
   const firstCard = content.dialogs[0];
 
   assert.strictEqual(metadata.title, "Dialog Cards Papi Jo Media");
@@ -313,9 +455,7 @@ async function testLibraryBundle(tempPath) {
   const outputPath = path.join(tempPath, "guessit-library-bundle.h5p");
   await h5pPackage.savePackage(outputPath);
 
-  const zip = await loadPackage(outputPath);
-  const metadata = await readJson(zip, "h5p.json");
-  const content = await readJson(zip, "content/content.json");
+  const { zip, metadata, content } = await assertFullPackage(outputPath);
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
   assert.deepStrictEqual(content, { questions: [] });
   assert.ok(zip.file("H5P.GuessIt-1.6/library.json"));
@@ -327,25 +467,30 @@ async function testLibraryBundle(tempPath) {
 
 async function testGuessItSentences(tempPath) {
   const outputPath = path.join(tempPath, "guessit-sentences.h5p");
-  runCli([
-    "guessit",
-    path.join(fixturesPath, "guessit-sentences.csv"),
-    outputPath,
-    "-n",
-    "Regression GuessIt Sentences",
-    "--description",
-    "Guess the imported sentences",
-    "--case-sensitive",
-    "--random",
-    "--show-solutions",
-    "--item-count-choice",
-    "--audio-display",
-    "always",
-  ], tempPath);
+  const cliResult = runCli(
+    [
+      "guessit",
+      path.join(fixturesPath, "guessit-sentences.csv"),
+      outputPath,
+      "-n",
+      "Regression GuessIt Sentences",
+      "--description",
+      "Guess the imported sentences",
+      "--case-sensitive",
+      "--random",
+      "--show-solutions",
+      "--item-count-choice",
+      "--audio-display",
+      "always",
+    ],
+    tempPath,
+    outputPath
+  );
 
-  const zip = await loadPackage(outputPath);
-  const metadata = await readJson(zip, "h5p.json");
-  const content = await readJson(zip, "content/content.json");
+  assert.strictEqual(cliResult.status, 0);
+  const { zip, metadata, content } = await assertFullPackage(outputPath, {
+    "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+  });
 
   assert.strictEqual(metadata.title, "Regression GuessIt Sentences");
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
@@ -385,21 +530,26 @@ async function testGuessItSentences(tempPath) {
 
 async function testGuessItWordle(tempPath) {
   const outputPath = path.join(tempPath, "guessit-wordle.h5p");
-  runCli([
-    "guessit",
-    path.join(fixturesPath, "guessit-wordle-regression.csv"),
-    outputPath,
-    "-n",
-    "Regression GuessIt Wordle",
-    "--mode",
-    "wordle",
-    "--max-tries",
-    "8",
-  ], tempPath);
+  const cliResult = runCli(
+    [
+      "guessit",
+      path.join(fixturesPath, "guessit-wordle-regression.csv"),
+      outputPath,
+      "-n",
+      "Regression GuessIt Wordle",
+      "--mode",
+      "wordle",
+      "--max-tries",
+      "8",
+    ],
+    tempPath,
+    outputPath
+  );
 
-  const zip = await loadPackage(outputPath);
-  const metadata = await readJson(zip, "h5p.json");
-  const content = await readJson(zip, "content/content.json");
+  assert.strictEqual(cliResult.status, 0);
+  const { zip, metadata, content } = await assertFullPackage(outputPath, {
+    "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+  });
 
   assert.strictEqual(metadata.title, "Regression GuessIt Wordle");
   assertDependency(metadata, "H5P.GuessIt", 1, 6);
@@ -425,7 +575,9 @@ async function testMinimalPackages(tempPath) {
         "flashcards",
         path.join(fixturesPath, "flashcards-local.csv"),
       ],
-      expectedContentFiles: ["content/images/0.jpg"],
+      expectedMedia: {
+        "content/images/0.jpg": fs.readFileSync(imageFixturePath),
+      },
     },
     {
       name: "Dialog Cards",
@@ -434,10 +586,10 @@ async function testMinimalPackages(tempPath) {
         "dialogcards",
         path.join(fixturesPath, "dialogcards-local.csv"),
       ],
-      expectedContentFiles: [
-        "content/images/0.jpg",
-        "content/audios/0.mp3",
-      ],
+      expectedMedia: {
+        "content/images/0.jpg": fs.readFileSync(imageFixturePath),
+        "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+      },
     },
     {
       name: "Dialog Cards Papi Jo",
@@ -446,15 +598,26 @@ async function testMinimalPackages(tempPath) {
         "dialogcardsPapiJo",
         path.join(fixturesPath, "dialogcards-papijo-local.csv"),
       ],
-      expectedContentFiles: [
-        "content/images/0.jpg",
-        "content/images/1.jpg",
-        "content/audios/0.mp3",
-        "content/audios/1.mp3",
-      ],
+      expectedMedia: {
+        "content/images/0.jpg": fs.readFileSync(imageFixturePath),
+        "content/images/1.jpg": fs.readFileSync(imageFixturePath),
+        "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+        "content/audios/1.mp3": fs.readFileSync(audioFixturePath),
+      },
     },
     {
-      name: "GuessIt",
+      name: "GuessIt sentence mode",
+      output: "guessit-sentence-minimal.h5p",
+      args: [
+        "guessit",
+        path.join(fixturesPath, "guessit-sentences.csv"),
+      ],
+      expectedMedia: {
+        "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+      },
+    },
+    {
+      name: "GuessIt Wordle mode",
       output: "guessit-minimal.h5p",
       args: [
         "guessit",
@@ -462,55 +625,104 @@ async function testMinimalPackages(tempPath) {
         "--mode",
         "wordle",
       ],
-      expectedContentFiles: ["content/audios/0.mp3"],
+      expectedMedia: {
+        "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+      },
     },
   ];
 
   for (const testCase of cases) {
     const outputPath = path.join(tempPath, testCase.output);
-    runCli(
+    const cliResult = runCli(
       [
         ...testCase.args,
         outputPath,
         "--package-mode",
         "minimal",
       ],
-      tempPath
+      tempPath,
+      outputPath
     );
-    const zip = await loadPackage(outputPath);
-    await assertMinimalPackage(zip, testCase.expectedContentFiles);
+    assert.strictEqual(cliResult.status, 0);
+    assert.strictEqual(cliResult.outputArchivePath, outputPath);
+    await assertMinimalPackage(outputPath, testCase.expectedMedia);
   }
 }
 
 async function testPackageModeValidation(tempPath) {
   const outputPath = path.join(tempPath, "invalid-package-mode.h5p");
-  const output = runCliExpectFailure([
-    "flashcards",
-    path.join(fixturesPath, "flashcards-local.csv"),
-    outputPath,
-    "--package-mode",
-    "unsupported",
-  ], tempPath);
+  const result = runCliExpectFailure(
+    [
+      "flashcards",
+      path.join(fixturesPath, "flashcards-local.csv"),
+      outputPath,
+      "--package-mode",
+      "unsupported",
+    ],
+    tempPath,
+    outputPath
+  );
 
-  assert.match(output, /Invalid values|Choices:/);
+  assert.notStrictEqual(result.status, 0);
+  assert.strictEqual(result.outputArchivePath, outputPath);
+  assert.match(combinedCliOutput(result), /Invalid values|Choices:/);
   assert.strictEqual(fs.existsSync(outputPath), false);
 }
 
 async function testGuessItValidation(tempPath) {
   const outputPath = path.join(tempPath, "invalid-wordle.h5p");
-  const output = runCliExpectFailure([
-    "guessit",
-    path.join(fixturesPath, "guessit-invalid-wordle.csv"),
-    outputPath,
-    "--mode",
-    "wordle",
-  ], tempPath);
+  const result = runCliExpectFailure(
+    [
+      "guessit",
+      path.join(fixturesPath, "guessit-invalid-wordle.csv"),
+      outputPath,
+      "--mode",
+      "wordle",
+    ],
+    tempPath,
+    outputPath
+  );
 
-  assert.match(output, /Wordle items must contain 4 to 8 supported letters/);
+  assert.notStrictEqual(result.status, 0);
+  assert.strictEqual(result.outputArchivePath, outputPath);
+  assert.match(
+    combinedCliOutput(result),
+    /Wordle items must contain 4 to 8 supported letters/
+  );
   assert.strictEqual(fs.existsSync(outputPath), false);
 }
 
 async function testPackageErrors(tempPath) {
+  const malformedArchivePath = path.join(tempPath, "malformed.h5p");
+  fs.writeFileSync(malformedArchivePath, "This is not a ZIP archive.");
+  await assert.rejects(
+    H5pPackage.createFromFile(
+      malformedArchivePath,
+      "H5P.Malformed",
+      "en"
+    ),
+    /Could not open H5P package .*malformed\.h5p:/
+  );
+
+  const malformedMetadataArchive = new JSZip();
+  malformedMetadataArchive.file("h5p.json", "{ invalid JSON");
+  const malformedMetadataPath = path.join(
+    tempPath,
+    "malformed-metadata.h5p"
+  );
+  fs.writeFileSync(
+    malformedMetadataPath,
+    await malformedMetadataArchive.generateAsync({ type: "nodebuffer" })
+  );
+  await assert.rejects(
+    H5pPackage.createFromFile(
+      malformedMetadataPath,
+      "H5P.MalformedMetadata",
+      "en"
+    ),
+    /Invalid h5p\.json:/
+  );
+
   await assert.rejects(
     H5pPackage.createFromFile(
       "content-type-cache/H5P.GuessIt.h5p",
