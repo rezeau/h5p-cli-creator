@@ -2,13 +2,14 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const JSZip = require("jszip");
 const { H5pPackage } = require("../dist/h5p-package");
 
 const projectRoot = path.resolve(__dirname, "..");
 const cliPath = path.join(projectRoot, "dist", "index.js");
 const fixturesPath = path.join(__dirname, "fixtures");
+const httpFixtureServerPath = path.join(__dirname, "http-fixture-server.js");
 const imageFixturePath = path.join(__dirname, "image1.jpg");
 const audioFixturePath = path.join(__dirname, "sound.mp3");
 
@@ -76,6 +77,143 @@ function runCliExpectFailure(args, cwd, outputArchivePath) {
 
 function combinedCliOutput(result) {
   return `${result.stdout}\n${result.stderr}`;
+}
+
+function startHttpFixtureServer() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [httpFixtureServerPath], {
+      cwd: projectRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const startupTimeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.kill();
+      reject(
+        new Error(
+          `HTTP fixture server did not report a port in time.\n${stderr}`
+        )
+      );
+    }, 5000);
+
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (data) => {
+      stderr += data;
+    });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (data) => {
+      if (settled) {
+        return;
+      }
+      stdout += data;
+      const newlineIndex = stdout.indexOf("\n");
+      if (newlineIndex === -1) {
+        return;
+      }
+
+      let startup;
+      try {
+        startup = JSON.parse(stdout.slice(0, newlineIndex));
+      } catch (error) {
+        settled = true;
+        clearTimeout(startupTimeout);
+        child.kill();
+        reject(
+          new Error(
+            `HTTP fixture server reported invalid startup data: ${stdout}`
+          )
+        );
+        return;
+      }
+
+      if (!Number.isInteger(startup.port) || startup.port <= 0) {
+        settled = true;
+        clearTimeout(startupTimeout);
+        child.kill();
+        reject(
+          new Error(
+            `HTTP fixture server reported an invalid port: ${startup.port}`
+          )
+        );
+        return;
+      }
+      settled = true;
+      clearTimeout(startupTimeout);
+      resolve({
+        baseUrl: `http://127.0.0.1:${startup.port}`,
+        child,
+        getStderr: () => stderr,
+      });
+    });
+    child.once("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(startupTimeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(startupTimeout);
+      reject(
+        new Error(
+          `HTTP fixture server exited during startup with code ${code} ` +
+            `and signal ${signal}.\n${stderr}`
+        )
+      );
+    });
+  });
+}
+
+function stopHttpFixtureServer(fixtureServer) {
+  if (!fixtureServer || fixtureServer.child.exitCode !== null) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const { child } = fixtureServer;
+    let timedOut = false;
+    const shutdownTimeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, 5000);
+
+    child.once("exit", (code, signal) => {
+      clearTimeout(shutdownTimeout);
+      if (timedOut) {
+        reject(new Error("HTTP fixture server did not shut down in time."));
+        return;
+      }
+      if (code === 0 || signal === "SIGTERM") {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          `HTTP fixture server exited with code ${code} and signal ${signal}.` +
+            `\n${fixtureServer.getStderr()}`
+        )
+      );
+    });
+    child.stdin.end("shutdown\n");
+  });
+}
+
+function writeTemporaryCsv(tempPath, filename, content) {
+  const csvPath = path.join(tempPath, filename);
+  assertTemporaryOutputPath(csvPath);
+  fs.writeFileSync(csvPath, content, "utf8");
+  return csvPath;
 }
 
 async function loadPackage(packagePath) {
@@ -566,6 +704,288 @@ async function testGuessItWordle(tempPath) {
   assert.ok(zip.file("content/audios/0.mp3"));
 }
 
+async function testRemoteFlashcards(tempPath, fixtureServer) {
+  const csvPath = writeTemporaryCsv(
+    tempPath,
+    "flashcards-remote.csv",
+    [
+      "question;answer;tip;image",
+      `Remote question;Remote answer;Remote tip;${fixtureServer.baseUrl}/image.jpg`,
+      "",
+    ].join("\n")
+  );
+  const outputPath = path.join(tempPath, "flashcards-remote.h5p");
+  const result = runCli(
+    ["flashcards", csvPath, outputPath, "-t", "Remote Flashcards"],
+    tempPath,
+    outputPath
+  );
+
+  assert.strictEqual(result.status, 0);
+  assert.match(result.stdout, /Downloaded image from .*\/image\.jpg/);
+  assert.strictEqual(result.stderr, "");
+  const { content } = await assertFullPackage(outputPath, {
+    "content/images/0.jpg": fs.readFileSync(imageFixturePath),
+  });
+  assert.strictEqual(content.cards[0].image.path, "images/0.jpg");
+  assert.strictEqual(content.cards[0].image.mime, "image/jpeg");
+}
+
+async function testRemoteDialogCards(tempPath, fixtureServer) {
+  const csvPath = writeTemporaryCsv(
+    tempPath,
+    "dialogcards-remote.csv",
+    [
+      "front;back;image;audio",
+      `Remote front;Remote back;${fixtureServer.baseUrl}/image.jpg?fixture=dialog;` +
+        `${fixtureServer.baseUrl}/redirect-audio.mp3`,
+      "",
+    ].join("\n")
+  );
+  const outputPath = path.join(tempPath, "dialogcards-remote.h5p");
+  const result = runCli(
+    ["dialogcards", csvPath, outputPath, "-n", "Remote Dialog Cards"],
+    tempPath,
+    outputPath
+  );
+
+  assert.strictEqual(result.status, 0);
+  assert.match(result.stdout, /Downloaded image from .*fixture=dialog/);
+  assert.match(result.stdout, /Downloaded audio from .*redirect-audio\.mp3/);
+  assert.strictEqual(result.stderr, "");
+
+  // Current behaviour treats the URL query string as part of the extension.
+  const imagePath = "images/0.jpg?fixture=dialog";
+  const { content } = await assertFullPackage(outputPath, {
+    [`content/${imagePath}`]: fs.readFileSync(imageFixturePath),
+    "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+  });
+  assert.strictEqual(content.dialogs[0].image.path, imagePath);
+  assert.strictEqual(content.dialogs[0].image.mime, "image/jpeg");
+  assert.strictEqual(content.dialogs[0].audio[0].path, "audios/0.mp3");
+  assert.strictEqual(content.dialogs[0].audio[0].mime, "audio/mpeg");
+}
+
+async function testRemoteDialogCardsPapiJo(tempPath, fixtureServer) {
+  const csvPath = writeTemporaryCsv(
+    tempPath,
+    "dialogcards-papijo-remote.csv",
+    [
+      "front;back;image;imageAltText;image2;imageAltText2;audio;audio2;tipFront;tipBack;categories",
+      `Remote front;Remote back;${fixtureServer.baseUrl}/image;Front remote image;` +
+        `${fixtureServer.baseUrl}/redirect-image.jpg;Back remote image;` +
+        `${fixtureServer.baseUrl}/audio.mp3?fixture=papijo;` +
+        `${fixtureServer.baseUrl}/audio.mp3;Front tip;Back tip;remote`,
+      "",
+    ].join("\n")
+  );
+  const outputPath = path.join(tempPath, "dialogcards-papijo-remote.h5p");
+  const result = runCli(
+    [
+      "dialogcardsPapiJo",
+      csvPath,
+      outputPath,
+      "-n",
+      "Remote Dialog Cards Papi Jo",
+    ],
+    tempPath,
+    outputPath
+  );
+
+  assert.strictEqual(result.status, 0);
+  assert.match(result.stdout, /Added image from .*\/image\./);
+  assert.match(result.stdout, /Added image from .*redirect-image\.jpg/);
+  assert.match(result.stdout, /Added audio from .*fixture=papijo/);
+  assert.strictEqual(result.stderr, "");
+
+  // Current behaviour keeps extensionless media extensionless and includes
+  // query strings in generated archive paths.
+  const frontAudioPath = "audios/0.mp3?fixture=papijo";
+  const { content } = await assertFullPackage(outputPath, {
+    "content/images/0": fs.readFileSync(imageFixturePath),
+    "content/images/1.jpg": fs.readFileSync(imageFixturePath),
+    [`content/${frontAudioPath}`]: fs.readFileSync(audioFixturePath),
+    "content/audios/1.mp3": fs.readFileSync(audioFixturePath),
+  });
+  const card = content.dialogs[0];
+  assert.strictEqual(card.imageMedia.image.path, "images/0");
+  assert.strictEqual(card.imageMedia.image.mime, "image/jpeg");
+  assert.strictEqual(card.imageMedia.image2.path, "images/1.jpg");
+  assert.strictEqual(card.imageMedia.image2.mime, "image/jpeg");
+  assert.strictEqual(card.audioMedia.audio[0].path, frontAudioPath);
+  assert.strictEqual(card.audioMedia.audio[0].mime, "audio/mpeg");
+  assert.strictEqual(card.audioMedia.audio2[0].path, "audios/1.mp3");
+  assert.strictEqual(card.audioMedia.audio2[0].mime, "audio/mpeg");
+}
+
+async function testRemoteGuessItSentences(tempPath, fixtureServer) {
+  const csvPath = writeTemporaryCsv(
+    tempPath,
+    "guessit-sentences-remote.csv",
+    [
+      "item;tip;audio",
+      `Remote media is deterministic;Remote sentence;${fixtureServer.baseUrl}/audio`,
+      "",
+    ].join("\n")
+  );
+  const outputPath = path.join(tempPath, "guessit-sentences-remote.h5p");
+  const result = runCli(
+    ["guessit", csvPath, outputPath, "-n", "Remote GuessIt Sentences"],
+    tempPath,
+    outputPath
+  );
+
+  assert.strictEqual(result.status, 0);
+  assert.match(result.stdout, /Added audio from .*\/audio\./);
+  assert.strictEqual(result.stderr, "");
+  const { content } = await assertFullPackage(outputPath, {
+    "content/audios/0": fs.readFileSync(audioFixturePath),
+  });
+  assert.strictEqual(content.questions[0].audio[0].path, "audios/0");
+  assert.strictEqual(content.questions[0].audio[0].mime, "audio/mpeg");
+}
+
+async function testRemoteGuessItWordle(tempPath, fixtureServer) {
+  const csvPath = writeTemporaryCsv(
+    tempPath,
+    "guessit-wordle-remote.csv",
+    [
+      "item;tip;audio",
+      `Media;Remote Wordle audio;${fixtureServer.baseUrl}/redirect-audio.mp3`,
+      "",
+    ].join("\n")
+  );
+  const outputPath = path.join(tempPath, "guessit-wordle-remote.h5p");
+  const result = runCli(
+    [
+      "guessit",
+      csvPath,
+      outputPath,
+      "--mode",
+      "wordle",
+      "-n",
+      "Remote GuessIt Wordle",
+    ],
+    tempPath,
+    outputPath
+  );
+
+  assert.strictEqual(result.status, 0);
+  assert.match(result.stdout, /Added audio from .*redirect-audio\.mp3/);
+  assert.strictEqual(result.stderr, "");
+  const { content } = await assertFullPackage(outputPath, {
+    "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+  });
+  assert.strictEqual(content.questionsW[0].audio[0].path, "audios/0.mp3");
+  assert.strictEqual(content.questionsW[0].audio[0].mime, "audio/mpeg");
+}
+
+function assertMediaFailureResult(result, expectedError) {
+  assert.strictEqual(
+    result.status,
+    0,
+    "Current media-failure behaviour should still create a package"
+  );
+  assert.ok(
+    fs.existsSync(result.outputArchivePath),
+    "Expected package creation to continue after a media failure"
+  );
+  assert.match(result.stdout, /Stored full H5P package at/);
+  assert.match(result.stderr, expectedError);
+}
+
+async function testRemoteMediaFailures(tempPath, fixtureServer) {
+  const flashcardsCsvPath = writeTemporaryCsv(
+    tempPath,
+    "flashcards-remote-404.csv",
+    [
+      "question;answer;tip;image",
+      `Missing image;Still packaged;;${fixtureServer.baseUrl}/status/404`,
+      "",
+    ].join("\n")
+  );
+  const flashcardsOutputPath = path.join(
+    tempPath,
+    "flashcards-remote-404.h5p"
+  );
+  const flashcardsResult = runCli(
+    ["flashcards", flashcardsCsvPath, flashcardsOutputPath],
+    tempPath,
+    flashcardsOutputPath
+  );
+  assertMediaFailureResult(flashcardsResult, /status code 404/i);
+  const flashcardsPackage = await assertFullPackage(flashcardsOutputPath);
+  assert.strictEqual(flashcardsPackage.content.cards[0].image, undefined);
+  assert.strictEqual(
+    Object.keys(flashcardsPackage.zip.files).some((entry) =>
+      entry.startsWith("content/images/")
+    ),
+    false
+  );
+
+  const dialogCardsCsvPath = writeTemporaryCsv(
+    tempPath,
+    "dialogcards-remote-500.csv",
+    [
+      "front;back;image;audio",
+      `Server error;Still packaged;;${fixtureServer.baseUrl}/status/500`,
+      "",
+    ].join("\n")
+  );
+  const dialogCardsOutputPath = path.join(
+    tempPath,
+    "dialogcards-remote-500.h5p"
+  );
+  const dialogCardsResult = runCli(
+    ["dialogcards", dialogCardsCsvPath, dialogCardsOutputPath],
+    tempPath,
+    dialogCardsOutputPath
+  );
+  assertMediaFailureResult(dialogCardsResult, /status code 500/i);
+  const dialogCardsPackage = await assertFullPackage(dialogCardsOutputPath);
+  assert.strictEqual(dialogCardsPackage.content.dialogs[0].audio, undefined);
+  assert.strictEqual(
+    Object.keys(dialogCardsPackage.zip.files).some((entry) =>
+      entry.startsWith("content/audios/")
+    ),
+    false
+  );
+
+  const papiJoCsvPath = writeTemporaryCsv(
+    tempPath,
+    "dialogcards-papijo-connection-failure.csv",
+    [
+      "front;back;image",
+      `Connection failure;Still packaged;${fixtureServer.baseUrl}/connection-failure`,
+      "",
+    ].join("\n")
+  );
+  const papiJoOutputPath = path.join(
+    tempPath,
+    "dialogcards-papijo-connection-failure.h5p"
+  );
+  const papiJoResult = runCli(
+    ["dialogcardsPapiJo", papiJoCsvPath, papiJoOutputPath],
+    tempPath,
+    papiJoOutputPath
+  );
+  assertMediaFailureResult(
+    papiJoResult,
+    /socket hang up|ECONNRESET|connection reset/i
+  );
+  const papiJoPackage = await assertFullPackage(papiJoOutputPath);
+  assert.strictEqual(
+    papiJoPackage.content.dialogs[0].imageMedia.image,
+    undefined
+  );
+  assert.strictEqual(
+    Object.keys(papiJoPackage.zip.files).some((entry) =>
+      entry.startsWith("content/images/")
+    ),
+    false
+  );
+}
+
 async function testMinimalPackages(tempPath) {
   const cases = [
     {
@@ -780,6 +1200,7 @@ async function main() {
   const tempPath = fs.mkdtempSync(
     path.join(os.tmpdir(), "h5p-cli-creator-tests-")
   );
+  let fixtureServer;
 
   try {
     await runTest("Flashcards 1.5 importer", testFlashcards, tempPath);
@@ -797,13 +1218,48 @@ async function main() {
     await runTest("GuessIt cached library bundle loader", testLibraryBundle, tempPath);
     await runTest("GuessIt sentence importer", testGuessItSentences, tempPath);
     await runTest("GuessIt Wordle importer", testGuessItWordle, tempPath);
+    fixtureServer = await startHttpFixtureServer();
+    await runTest(
+      "Flashcards remote image importer",
+      (path) => testRemoteFlashcards(path, fixtureServer),
+      tempPath
+    );
+    await runTest(
+      "Dialog Cards remote media importer",
+      (path) => testRemoteDialogCards(path, fixtureServer),
+      tempPath
+    );
+    await runTest(
+      "Dialog Cards Papi Jo remote media importer",
+      (path) => testRemoteDialogCardsPapiJo(path, fixtureServer),
+      tempPath
+    );
+    await runTest(
+      "GuessIt sentence remote audio importer",
+      (path) => testRemoteGuessItSentences(path, fixtureServer),
+      tempPath
+    );
+    await runTest(
+      "GuessIt Wordle remote audio importer",
+      (path) => testRemoteGuessItWordle(path, fixtureServer),
+      tempPath
+    );
+    await runTest(
+      "Remote media failure behaviour",
+      (path) => testRemoteMediaFailures(path, fixtureServer),
+      tempPath
+    );
     await runTest("Minimal packages for all importers", testMinimalPackages, tempPath);
     await runTest("Package mode validation", testPackageModeValidation, tempPath);
     await runTest("GuessIt CSV validation", testGuessItValidation, tempPath);
     await runTest("Package validation errors", testPackageErrors, tempPath);
     console.log("All regression tests passed.");
   } finally {
-    fs.rmSync(tempPath, { recursive: true, force: true });
+    try {
+      await stopHttpFixtureServer(fixtureServer);
+    } finally {
+      fs.rmSync(tempPath, { recursive: true, force: true });
+    }
   }
 }
 
