@@ -9,6 +9,10 @@
   },
   "author": "Sebastian Rettig",
   "license": "MIT",
+  "packageManager": "npm@11.18.0",
+  "engines": {
+    "node": ">=22.13.0 <23 || >=24.0.0 <25"
+  },
   "dependencies": {
     "axios": "^1.13.2",
     "buffer-image-size": "^0.6.4",
