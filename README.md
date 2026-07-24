@@ -112,7 +112,18 @@ Available play modes are `normalMode`, `browseSideBySide`, `matchMode`, `matchRe
 
 ## H5P package sources
 
-The `content-type-cache` directory contains pinned H5P packages used by the commands, including the custom `H5P.GuessIt` library bundle. A pinned package can be either a complete content package or a library bundle. Keeping these packages in the repository makes output reproducible and allows the CLI to work offline. If a package is absent, the loader can attempt to download its machine name from the H5P Hub.
+The `content-type-cache` directory contains pinned H5P packages used by the commands. Package lookup is cache-first and case-insensitive. If a matching cache file exists, it is authoritative and no network request or automatic refresh is performed.
+
+When an official package is absent, the loader retains its existing H5P Hub fallback. The following third-party packages instead have versioned, checksum-pinned GitHub Release sources:
+
+- `H5P.DialogcardsPapiJo` 1.17.1 is stored as `content-type-cache/H5P.DialogcardsPapiJo.h5p` and retrieved from the [v1.17.1 release](https://github.com/rezeau/h5p-dialogcards-papijo/releases/tag/v1.17.1), with SHA-256 `E6AE57451E3A898D3693871C149F2528523DFDD869D0A6F84EE5347D7CDA38EB`.
+- `H5P.GuessIt` 1.6.0 is stored as `content-type-cache/H5P.GuessIt.h5p` and retrieved from the [v1.6.0 release](https://github.com/rezeau/h5p-guessit-papijo/releases/tag/v1.6.0), with SHA-256 `70868659869901FB5E058992527F01FE3CFA137BFF3E492EBE2E607A9D33CB42`.
+
+Downloads use bounded redirects, a timeout, and a maximum response size. A package is written to a temporary file in the cache directory, then its checksum, ZIP structure, library identity and version, runnable metadata, semantics, and dependency graph are validated before it is published atomically under the canonical cache filename. Failed downloads and validations leave no cache entry. A successfully cached package is reused on later runs, including offline runs.
+
+Cached packages are never refreshed or silently repaired. If a cache entry is corrupt or an intentionally newer pinned source is introduced, remove the exact cached package file and run the command again to trigger retrieval. Existing cache entries are not rechecked against the source registry checksum during normal lookup.
+
+A pinned package can be either a complete content package or a library bundle. Keeping packages in the repository makes output reproducible and allows the CLI to work offline.
 
 A `development-packages` directory may be used for versioned H5P library bundles while adding or upgrading content types. Library bundles do not need to contain `h5p.json` or `content/content.json`; the package loader can create the required metadata from the runnable library and its dependency graph. Once an integration is approved, its production bundle belongs in `content-type-cache` and the redundant development copy can be removed.
 

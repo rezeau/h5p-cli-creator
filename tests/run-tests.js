@@ -4,6 +4,13 @@ const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const JSZip = require("jszip");
+const {
+  customPackageSources,
+} = require("../dist/custom-package-sources");
+const {
+  DialogCardsPapiJoCreator,
+} = require("../dist/dialogcardsPapiJo-creator");
+const { GuessItCreator } = require("../dist/guessit-creator");
 const { H5pPackage } = require("../dist/h5p-package");
 
 const projectRoot = path.resolve(__dirname, "..");
@@ -100,7 +107,7 @@ function startHttpFixtureServer() {
           `HTTP fixture server did not report a port in time.\n${stderr}`
         )
       );
-    }, 5000);
+    }, 15000);
 
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (data) => {
@@ -149,6 +156,7 @@ function startHttpFixtureServer() {
         baseUrl: `http://127.0.0.1:${startup.port}`,
         child,
         getStderr: () => stderr,
+        packageHashes: startup.packageHashes || {},
       });
     });
     child.once("error", (error) => {
@@ -214,6 +222,25 @@ function writeTemporaryCsv(tempPath, filename, content) {
   assertTemporaryOutputPath(csvPath);
   fs.writeFileSync(csvPath, content, "utf8");
   return csvPath;
+}
+
+function assertNoAcquisitionResidue(cacheDirectory) {
+  if (!fs.existsSync(cacheDirectory)) {
+    return;
+  }
+  const residue = fs
+    .readdirSync(cacheDirectory)
+    .filter(
+      (entry) =>
+        entry.endsWith(".tmp") ||
+        entry.endsWith(".lock") ||
+        entry.includes(".case-tmp")
+    );
+  assert.deepStrictEqual(
+    residue,
+    [],
+    `Expected no package-acquisition residue in ${cacheDirectory}`
+  );
 }
 
 async function loadPackage(packagePath) {
@@ -601,6 +628,666 @@ async function testLibraryBundle(tempPath) {
   assert.ok(zip.file("H5P.Question-1.5/library.json"));
   assertGuessItDevelopmentArtifactsAbsent(zip);
 
+}
+
+async function testSafePackageAcquisition(tempPath) {
+  const hubBasePath = "/hub/v1/";
+  const sourcePackagePath = path.join(
+    projectRoot,
+    "content-type-cache",
+    "H5P.Flashcards.h5p"
+  );
+  const fixtureServer = await startHttpFixtureServer();
+  let fixtureServerStopped = false;
+  let populatedCacheDirectory;
+
+  try {
+    populatedCacheDirectory = path.join(
+      tempPath,
+      "safe-acquisition-success"
+    );
+    const acquisitionSettings = {
+      cacheDirectory: populatedCacheDirectory,
+      h5pHubBaseUrl: fixtureServer.baseUrl + hubBasePath,
+      maxDownloadSizeBytes: 5 * 1024 * 1024,
+      maxRedirects: 3,
+      timeoutMs: 2000,
+    };
+    const downloadedPackage = await H5pPackage.createFromHub(
+      "H5P.Flashcards",
+      "en",
+      acquisitionSettings
+    );
+    assert.strictEqual(
+      downloadedPackage.h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    const populatedCachePath = path.join(
+      populatedCacheDirectory,
+      "H5P.Flashcards.h5p"
+    );
+    assert.ok(fs.existsSync(populatedCachePath));
+    assert.deepStrictEqual(
+      fs.readFileSync(populatedCachePath),
+      fs.readFileSync(sourcePackagePath)
+    );
+    assertNoAcquisitionResidue(populatedCacheDirectory);
+
+    const cacheHitDirectory = path.join(tempPath, "safe-acquisition-hit");
+    fs.mkdirSync(cacheHitDirectory);
+    fs.copyFileSync(
+      sourcePackagePath,
+      path.join(cacheHitDirectory, "h5p.flashcards.h5p")
+    );
+    const cachedPackage = await H5pPackage.createFromHub(
+      "H5P.Flashcards",
+      "en",
+      {
+        cacheDirectory: cacheHitDirectory,
+        h5pHubBaseUrl: "http://127.0.0.1:1/unreachable/",
+        timeoutMs: 100,
+      }
+    );
+    assert.strictEqual(
+      cachedPackage.h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    assertNoAcquisitionResidue(cacheHitDirectory);
+
+    const failureCases = [
+      {
+        contentType: "H5P.InvalidZip",
+        expectedError: /Could not open downloaded H5P package/,
+      },
+      {
+        contentType: "H5P.Html",
+        expectedError: /response is HTML or text/,
+      },
+      {
+        contentType: "H5P.Status404",
+        expectedError: /HTTP 404/,
+      },
+      {
+        contentType: "H5P.Status500",
+        expectedError: /HTTP 500/,
+      },
+      {
+        contentType: "H5P.ConnectionReset",
+        expectedError: /connection reset/i,
+      },
+      {
+        contentType: "H5P.Timeout",
+        expectedError: /timed out after 50 ms/,
+        timeoutMs: 50,
+      },
+    ];
+    for (const failureCase of failureCases) {
+      const cacheDirectory = path.join(
+        tempPath,
+        `safe-acquisition-${failureCase.contentType.toLowerCase()}`
+      );
+      await assert.rejects(
+        H5pPackage.createFromHub(failureCase.contentType, "en", {
+          cacheDirectory,
+          h5pHubBaseUrl: fixtureServer.baseUrl + hubBasePath,
+          maxDownloadSizeBytes: 5 * 1024 * 1024,
+          timeoutMs: failureCase.timeoutMs || 2000,
+        }),
+        failureCase.expectedError
+      );
+      assert.strictEqual(
+        fs.existsSync(
+          path.join(cacheDirectory, `${failureCase.contentType}.h5p`)
+        ),
+        false
+      );
+      assertNoAcquisitionResidue(cacheDirectory);
+    }
+
+    const concurrentCacheDirectory = path.join(
+      tempPath,
+      "safe-acquisition-concurrent"
+    );
+    const concurrentSettings = {
+      cacheDirectory: concurrentCacheDirectory,
+      h5pHubBaseUrl: fixtureServer.baseUrl + hubBasePath,
+      maxDownloadSizeBytes: 5 * 1024 * 1024,
+      timeoutMs: 2000,
+    };
+    const concurrentPackages = await Promise.all([
+      H5pPackage.createFromHub("H5P.Flashcards", "en", concurrentSettings),
+      H5pPackage.createFromHub("H5P.Flashcards", "en", concurrentSettings),
+    ]);
+    assert.strictEqual(
+      concurrentPackages[0].h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    assert.strictEqual(
+      concurrentPackages[1].h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(
+        path.join(concurrentCacheDirectory, "H5P.Flashcards.h5p")
+      ),
+      fs.readFileSync(sourcePackagePath)
+    );
+    assertNoAcquisitionResidue(concurrentCacheDirectory);
+
+    await stopHttpFixtureServer(fixtureServer);
+    fixtureServerStopped = true;
+    const offlinePackage = await H5pPackage.createFromHub(
+      "H5P.Flashcards",
+      "en",
+      acquisitionSettings
+    );
+    assert.strictEqual(
+      offlinePackage.h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    assertNoAcquisitionResidue(populatedCacheDirectory);
+  } finally {
+    if (!fixtureServerStopped) {
+      await stopHttpFixtureServer(fixtureServer);
+    }
+  }
+}
+
+function createTestCustomSource(
+  machineName,
+  version,
+  cacheFilename,
+  expectedLibraryDirectory,
+  downloadUrl,
+  sha256
+) {
+  return {
+    machineName,
+    version,
+    cacheFilename,
+    downloadUrl,
+    expectedLibraryDirectory,
+    sha256,
+  };
+}
+
+async function testPinnedCustomPackageSources(tempPath) {
+  assert.deepStrictEqual(
+    customPackageSources.map((source) => ({
+      machineName: source.machineName,
+      version: source.version,
+      cacheFilename: source.cacheFilename,
+      downloadUrl: source.downloadUrl,
+      expectedLibraryDirectory: source.expectedLibraryDirectory,
+      sha256: source.sha256,
+    })),
+    [
+      {
+        machineName: "H5P.DialogcardsPapiJo",
+        version: { major: 1, minor: 17, patch: 1 },
+        cacheFilename: "H5P.DialogcardsPapiJo.h5p",
+        downloadUrl:
+          "https://github.com/rezeau/h5p-dialogcards-papijo/releases/" +
+          "download/v1.17.1/H5P.DialogcardsPapiJo-1.17.1.h5p",
+        expectedLibraryDirectory: "H5P.DialogcardsPapiJo-1.17",
+        sha256:
+          "E6AE57451E3A898D3693871C149F2528523DFDD869D0A6F84EE5347D7CDA38EB",
+      },
+      {
+        machineName: "H5P.GuessIt",
+        version: { major: 1, minor: 6, patch: 0 },
+        cacheFilename: "H5P.GuessIt.h5p",
+        downloadUrl:
+          "https://github.com/rezeau/h5p-guessit-papijo/releases/" +
+          "download/v1.6.0/H5P.GuessIt-1.6.0.h5p",
+        expectedLibraryDirectory: "H5P.GuessIt-1.6",
+        sha256:
+          "70868659869901FB5E058992527F01FE3CFA137BFF3E492EBE2E607A9D33CB42",
+      },
+    ]
+  );
+
+  const fixtureServer = await startHttpFixtureServer();
+  let fixtureServerStopped = false;
+  const papiJoVersion = { major: 1, minor: 17, patch: 1 };
+  const guessItVersion = { major: 1, minor: 6, patch: 0 };
+  const createPapiJoSource = (endpoint, sha256) =>
+    createTestCustomSource(
+      "H5P.DialogcardsPapiJo",
+      papiJoVersion,
+      "H5P.DialogcardsPapiJo.h5p",
+      "H5P.DialogcardsPapiJo-1.17",
+      fixtureServer.baseUrl + endpoint,
+      sha256
+    );
+  const createGuessItSource = (endpoint, sha256) =>
+    createTestCustomSource(
+      "H5P.GuessIt",
+      guessItVersion,
+      "H5P.GuessIt.h5p",
+      "H5P.GuessIt-1.6",
+      fixtureServer.baseUrl + endpoint,
+      sha256
+    );
+  const settingsFor = (cacheDirectory, source) => ({
+    cacheDirectory,
+    customPackageSources: [source],
+    h5pHubBaseUrl: fixtureServer.baseUrl + "/hub/v1/",
+    maxDownloadSizeBytes: 5 * 1024 * 1024,
+    maxRedirects: 3,
+    timeoutMs: 2000,
+  });
+  let papiJoCacheDirectory;
+
+  try {
+    papiJoCacheDirectory = path.join(tempPath, "custom-papijo-success");
+    const papiJoSettings = settingsFor(
+      papiJoCacheDirectory,
+      createPapiJoSource(
+        "/custom/dialogcards-papijo.h5p",
+        fixtureServer.packageHashes.dialogcardsPapiJo
+      )
+    );
+    const papiJoPackage = await H5pPackage.createFromHub(
+      "H5P.DialogcardsPapiJo",
+      "en",
+      papiJoSettings
+    );
+    assert.strictEqual(
+      papiJoPackage.h5pMetadata.mainLibrary,
+      "H5P.DialogcardsPapiJo"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(
+        path.join(
+          papiJoCacheDirectory,
+          "H5P.DialogcardsPapiJo.h5p"
+        )
+      ),
+      fs.readFileSync(
+        path.join(
+          projectRoot,
+          "content-type-cache",
+          "H5P.DialogcardsPapiJo.h5p"
+        )
+      )
+    );
+    const papiJoCreator = new DialogCardsPapiJoCreator(
+      papiJoPackage,
+      [{ front: "Acquired front", back: "Acquired back" }],
+      "normalMode",
+      tempPath
+    );
+    await papiJoCreator.create();
+    papiJoCreator.setTitle("Acquired Dialog Cards Papi Jo");
+    const papiJoOutputPath = path.join(
+      tempPath,
+      "custom-papijo-conversion.h5p"
+    );
+    await papiJoCreator.savePackage(papiJoOutputPath);
+    const papiJoOutput = await assertFullPackage(papiJoOutputPath);
+    assert.strictEqual(
+      papiJoOutput.metadata.mainLibrary,
+      "H5P.DialogcardsPapiJo"
+    );
+    assert.strictEqual(papiJoOutput.content.dialogs[0].text, "Acquired front");
+    assertNoAcquisitionResidue(papiJoCacheDirectory);
+
+    const guessItCacheDirectory = path.join(
+      tempPath,
+      "custom-guessit-success"
+    );
+    const guessItSettings = settingsFor(
+      guessItCacheDirectory,
+      createGuessItSource(
+        "/custom/guessit.h5p",
+        fixtureServer.packageHashes.guessIt
+      )
+    );
+    const guessItPackage = await H5pPackage.createFromHub(
+      "H5P.GuessIt",
+      "en",
+      guessItSettings
+    );
+    const sentenceCreator = new GuessItCreator(
+      guessItPackage,
+      [{ item: "Acquired custom sentence" }],
+      {
+        mode: "sentence",
+        description: "Acquired sentence",
+        caseSensitive: false,
+        maxTries: 6,
+        random: false,
+        showSolutions: false,
+        itemCountChoice: false,
+        audioDisplay: "correct",
+      },
+      tempPath
+    );
+    await sentenceCreator.create();
+    sentenceCreator.setTitle("Acquired GuessIt sentence");
+    const sentenceOutputPath = path.join(
+      tempPath,
+      "custom-guessit-sentence.h5p"
+    );
+    await sentenceCreator.savePackage(sentenceOutputPath);
+    const sentenceOutput = await assertFullPackage(sentenceOutputPath);
+    assert.strictEqual(sentenceOutput.metadata.mainLibrary, "H5P.GuessIt");
+    assert.strictEqual(
+      sentenceOutput.content.questions[0].sentence,
+      "Acquired custom sentence"
+    );
+
+    const wordlePackage = await H5pPackage.createFromHub(
+      "H5P.GuessIt",
+      "en",
+      guessItSettings
+    );
+    const wordleCreator = new GuessItCreator(
+      wordlePackage,
+      [{ item: "Paris" }],
+      {
+        mode: "wordle",
+        description: "Acquired Wordle",
+        caseSensitive: false,
+        maxTries: 6,
+        random: false,
+        showSolutions: false,
+        itemCountChoice: false,
+        audioDisplay: "correct",
+      },
+      tempPath
+    );
+    await wordleCreator.create();
+    const wordleOutputPath = path.join(
+      tempPath,
+      "custom-guessit-wordle.h5p"
+    );
+    await wordleCreator.savePackage(wordleOutputPath);
+    const wordleOutput = await assertFullPackage(wordleOutputPath);
+    assert.strictEqual(wordleOutput.content.wordle, true);
+    assert.strictEqual(wordleOutput.content.questionsW[0].sentence, "Paris");
+    assertNoAcquisitionResidue(guessItCacheDirectory);
+
+    const redirectCacheDirectory = path.join(
+      tempPath,
+      "custom-papijo-redirect"
+    );
+    await H5pPackage.createFromHub(
+      "H5P.DialogcardsPapiJo",
+      "en",
+      settingsFor(
+        redirectCacheDirectory,
+        createPapiJoSource(
+          "/custom/redirect-dialogcards-papijo.h5p",
+          fixtureServer.packageHashes.dialogcardsPapiJo
+        )
+      )
+    );
+    assert.ok(
+      fs.existsSync(
+        path.join(
+          redirectCacheDirectory,
+          "H5P.DialogcardsPapiJo.h5p"
+        )
+      )
+    );
+    assertNoAcquisitionResidue(redirectCacheDirectory);
+
+    const checksumCacheDirectory = path.join(
+      tempPath,
+      "custom-checksum-mismatch"
+    );
+    await assert.rejects(
+      H5pPackage.createFromHub(
+        "H5P.DialogcardsPapiJo",
+        "en",
+        settingsFor(
+          checksumCacheDirectory,
+          createPapiJoSource(
+            "/custom/dialogcards-papijo.h5p",
+            "0".repeat(64)
+          )
+        )
+      ),
+      /checksum mismatch/
+    );
+    assert.strictEqual(
+      fs.existsSync(
+        path.join(
+          checksumCacheDirectory,
+          "H5P.DialogcardsPapiJo.h5p"
+        )
+      ),
+      false
+    );
+    assertNoAcquisitionResidue(checksumCacheDirectory);
+
+    const structureCases = [
+      {
+        name: "wrong-library",
+        endpoint: "/custom/wrong-library.h5p",
+        hashName: "wrongLibrary",
+        expectedError: /library name .* does not match expected/,
+      },
+      {
+        name: "wrong-major",
+        endpoint: "/custom/wrong-major.h5p",
+        hashName: "wrongMajor",
+        expectedError: /version 2\.17\.1 does not match expected 1\.17\.1/,
+      },
+      {
+        name: "wrong-minor",
+        endpoint: "/custom/wrong-minor.h5p",
+        hashName: "wrongMinor",
+        expectedError: /version 1\.18\.1 does not match expected 1\.17\.1/,
+      },
+      {
+        name: "wrong-patch",
+        endpoint: "/custom/wrong-patch.h5p",
+        hashName: "wrongPatch",
+        expectedError: /version 1\.17\.2 does not match expected 1\.17\.1/,
+      },
+      {
+        name: "not-runnable",
+        endpoint: "/custom/not-runnable.h5p",
+        hashName: "notRunnable",
+        expectedError: /must declare runnable as 1/,
+      },
+      {
+        name: "missing-semantics",
+        endpoint: "/custom/missing-semantics.h5p",
+        hashName: "missingSemantics",
+        expectedError: /missing H5P\.DialogcardsPapiJo-1\.17\/semantics\.json/,
+      },
+      {
+        name: "incompatible-h5p",
+        endpoint: "/custom/incompatible-h5p.h5p",
+        hashName: "incompatibleH5p",
+        expectedError: /h5p\.json does not identify compatible main library/,
+      },
+      {
+        name: "missing-preloaded",
+        endpoint: "/custom/missing-preloaded.h5p",
+        hashName: "missingPreloaded",
+        expectedError: /missing preloaded dependency FontAwesome 4\.5/,
+      },
+      {
+        name: "missing-editor",
+        endpoint: "/custom/missing-editor.h5p",
+        hashName: "missingEditor",
+        expectedError:
+          /missing editor dependency H5PEditor\.VerticalTabs 1\.3/,
+      },
+    ];
+    for (const structureCase of structureCases) {
+      const cacheDirectory = path.join(
+        tempPath,
+        `custom-${structureCase.name}`
+      );
+      await assert.rejects(
+        H5pPackage.createFromHub(
+          "H5P.DialogcardsPapiJo",
+          "en",
+          settingsFor(
+            cacheDirectory,
+            createPapiJoSource(
+              structureCase.endpoint,
+              fixtureServer.packageHashes[structureCase.hashName]
+            )
+          )
+        ),
+        structureCase.expectedError
+      );
+      assert.strictEqual(
+        fs.existsSync(
+          path.join(cacheDirectory, "H5P.DialogcardsPapiJo.h5p")
+        ),
+        false
+      );
+      assertNoAcquisitionResidue(cacheDirectory);
+    }
+
+    const networkCases = [
+      {
+        name: "html",
+        endpoint: "/custom/html",
+        expectedError: /response is HTML or text/,
+      },
+      {
+        name: "404",
+        endpoint: "/custom/status/404",
+        expectedError: /HTTP 404/,
+      },
+      {
+        name: "500",
+        endpoint: "/custom/status/500",
+        expectedError: /HTTP 500/,
+      },
+      {
+        name: "connection-reset",
+        endpoint: "/custom/connection-reset",
+        expectedError: /connection reset/i,
+      },
+    ];
+    for (const networkCase of networkCases) {
+      const cacheDirectory = path.join(
+        tempPath,
+        `custom-network-${networkCase.name}`
+      );
+      await assert.rejects(
+        H5pPackage.createFromHub(
+          "H5P.DialogcardsPapiJo",
+          "en",
+          settingsFor(
+            cacheDirectory,
+            createPapiJoSource(networkCase.endpoint, "0".repeat(64))
+          )
+        ),
+        networkCase.expectedError
+      );
+      assert.strictEqual(
+        fs.existsSync(
+          path.join(cacheDirectory, "H5P.DialogcardsPapiJo.h5p")
+        ),
+        false
+      );
+      assertNoAcquisitionResidue(cacheDirectory);
+    }
+
+    const preservedCacheDirectory = path.join(
+      tempPath,
+      "custom-existing-preserved"
+    );
+    fs.mkdirSync(preservedCacheDirectory);
+    const preservedCachePath = path.join(
+      preservedCacheDirectory,
+      "h5p.dialogcardspapijo.h5p"
+    );
+    fs.copyFileSync(
+      path.join(
+        projectRoot,
+        "content-type-cache",
+        "H5P.DialogcardsPapiJo.h5p"
+      ),
+      preservedCachePath
+    );
+    const preservedBytes = fs.readFileSync(preservedCachePath);
+    await H5pPackage.createFromHub(
+      "H5P.DialogcardsPapiJo",
+      "en",
+      settingsFor(
+        preservedCacheDirectory,
+        createPapiJoSource("/custom/status/500", "0".repeat(64))
+      )
+    );
+    assert.deepStrictEqual(fs.readFileSync(preservedCachePath), preservedBytes);
+    assertNoAcquisitionResidue(preservedCacheDirectory);
+
+    const corruptCacheDirectory = path.join(
+      tempPath,
+      "custom-corrupt-existing"
+    );
+    fs.mkdirSync(corruptCacheDirectory);
+    const corruptCachePath = path.join(
+      corruptCacheDirectory,
+      "H5P.DialogcardsPapiJo.h5p"
+    );
+    fs.writeFileSync(corruptCachePath, "Not a ZIP archive.");
+    await assert.rejects(
+      H5pPackage.createFromHub(
+        "H5P.DialogcardsPapiJo",
+        "en",
+        settingsFor(
+          corruptCacheDirectory,
+          createPapiJoSource(
+            "/custom/dialogcards-papijo.h5p",
+            fixtureServer.packageHashes.dialogcardsPapiJo
+          )
+        )
+      ),
+      /Remove the cached file and retry/
+    );
+    assert.strictEqual(
+      fs.readFileSync(corruptCachePath, "utf8"),
+      "Not a ZIP archive."
+    );
+
+    await assert.rejects(
+      H5pPackage.createFromHub(
+        "H5P.DialogcardsPapiJo",
+        "en",
+        settingsFor(
+          path.join(tempPath, "custom-no-hub-fallback"),
+          createPapiJoSource("/custom/status/404", "0".repeat(64))
+        )
+      ),
+      /HTTP 404/
+    );
+
+    await stopHttpFixtureServer(fixtureServer);
+    fixtureServerStopped = true;
+    const offlinePackage = await H5pPackage.createFromHub(
+      "H5P.DialogcardsPapiJo",
+      "en",
+      settingsFor(
+        papiJoCacheDirectory,
+        createPapiJoSource(
+          "/custom/dialogcards-papijo.h5p",
+          fixtureServer.packageHashes.dialogcardsPapiJo
+        )
+      )
+    );
+    assert.strictEqual(
+      offlinePackage.h5pMetadata.mainLibrary,
+      "H5P.DialogcardsPapiJo"
+    );
+    assertNoAcquisitionResidue(papiJoCacheDirectory);
+  } finally {
+    if (!fixtureServerStopped) {
+      await stopHttpFixtureServer(fixtureServer);
+    }
+  }
 }
 
 async function testGuessItSentences(tempPath) {
@@ -1216,6 +1903,16 @@ async function main() {
       tempPath
     );
     await runTest("GuessIt cached library bundle loader", testLibraryBundle, tempPath);
+    await runTest(
+      "Safe and testable package acquisition",
+      testSafePackageAcquisition,
+      tempPath
+    );
+    await runTest(
+      "Pinned custom package sources",
+      testPinnedCustomPackageSources,
+      tempPath
+    );
     await runTest("GuessIt sentence importer", testGuessItSentences, tempPath);
     await runTest("GuessIt Wordle importer", testGuessItWordle, tempPath);
     fixtureServer = await startHttpFixtureServer();
