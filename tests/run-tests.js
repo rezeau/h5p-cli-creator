@@ -216,6 +216,25 @@ function writeTemporaryCsv(tempPath, filename, content) {
   return csvPath;
 }
 
+function assertNoAcquisitionResidue(cacheDirectory) {
+  if (!fs.existsSync(cacheDirectory)) {
+    return;
+  }
+  const residue = fs
+    .readdirSync(cacheDirectory)
+    .filter(
+      (entry) =>
+        entry.endsWith(".tmp") ||
+        entry.endsWith(".lock") ||
+        entry.includes(".case-tmp")
+    );
+  assert.deepStrictEqual(
+    residue,
+    [],
+    `Expected no package-acquisition residue in ${cacheDirectory}`
+  );
+}
+
 async function loadPackage(packagePath) {
   assert.ok(fs.existsSync(packagePath), `Expected output package ${packagePath}`);
   return JSZip.loadAsync(fs.readFileSync(packagePath));
@@ -601,6 +620,169 @@ async function testLibraryBundle(tempPath) {
   assert.ok(zip.file("H5P.Question-1.5/library.json"));
   assertGuessItDevelopmentArtifactsAbsent(zip);
 
+}
+
+async function testSafePackageAcquisition(tempPath) {
+  const hubBasePath = "/hub/v1/";
+  const sourcePackagePath = path.join(
+    projectRoot,
+    "content-type-cache",
+    "H5P.Flashcards.h5p"
+  );
+  const fixtureServer = await startHttpFixtureServer();
+  let fixtureServerStopped = false;
+  let populatedCacheDirectory;
+
+  try {
+    populatedCacheDirectory = path.join(
+      tempPath,
+      "safe-acquisition-success"
+    );
+    const acquisitionSettings = {
+      cacheDirectory: populatedCacheDirectory,
+      h5pHubBaseUrl: fixtureServer.baseUrl + hubBasePath,
+      maxDownloadSizeBytes: 5 * 1024 * 1024,
+      maxRedirects: 3,
+      timeoutMs: 2000,
+    };
+    const downloadedPackage = await H5pPackage.createFromHub(
+      "H5P.Flashcards",
+      "en",
+      acquisitionSettings
+    );
+    assert.strictEqual(
+      downloadedPackage.h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    const populatedCachePath = path.join(
+      populatedCacheDirectory,
+      "H5P.Flashcards.h5p"
+    );
+    assert.ok(fs.existsSync(populatedCachePath));
+    assert.deepStrictEqual(
+      fs.readFileSync(populatedCachePath),
+      fs.readFileSync(sourcePackagePath)
+    );
+    assertNoAcquisitionResidue(populatedCacheDirectory);
+
+    const cacheHitDirectory = path.join(tempPath, "safe-acquisition-hit");
+    fs.mkdirSync(cacheHitDirectory);
+    fs.copyFileSync(
+      sourcePackagePath,
+      path.join(cacheHitDirectory, "h5p.flashcards.h5p")
+    );
+    const cachedPackage = await H5pPackage.createFromHub(
+      "H5P.Flashcards",
+      "en",
+      {
+        cacheDirectory: cacheHitDirectory,
+        h5pHubBaseUrl: "http://127.0.0.1:1/unreachable/",
+        timeoutMs: 100,
+      }
+    );
+    assert.strictEqual(
+      cachedPackage.h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    assertNoAcquisitionResidue(cacheHitDirectory);
+
+    const failureCases = [
+      {
+        contentType: "H5P.InvalidZip",
+        expectedError: /Could not open downloaded H5P package/,
+      },
+      {
+        contentType: "H5P.Html",
+        expectedError: /response is HTML or text/,
+      },
+      {
+        contentType: "H5P.Status404",
+        expectedError: /HTTP 404/,
+      },
+      {
+        contentType: "H5P.Status500",
+        expectedError: /HTTP 500/,
+      },
+      {
+        contentType: "H5P.ConnectionReset",
+        expectedError: /connection reset/i,
+      },
+      {
+        contentType: "H5P.Timeout",
+        expectedError: /timed out after 50 ms/,
+        timeoutMs: 50,
+      },
+    ];
+    for (const failureCase of failureCases) {
+      const cacheDirectory = path.join(
+        tempPath,
+        `safe-acquisition-${failureCase.contentType.toLowerCase()}`
+      );
+      await assert.rejects(
+        H5pPackage.createFromHub(failureCase.contentType, "en", {
+          cacheDirectory,
+          h5pHubBaseUrl: fixtureServer.baseUrl + hubBasePath,
+          maxDownloadSizeBytes: 5 * 1024 * 1024,
+          timeoutMs: failureCase.timeoutMs || 2000,
+        }),
+        failureCase.expectedError
+      );
+      assert.strictEqual(
+        fs.existsSync(
+          path.join(cacheDirectory, `${failureCase.contentType}.h5p`)
+        ),
+        false
+      );
+      assertNoAcquisitionResidue(cacheDirectory);
+    }
+
+    const concurrentCacheDirectory = path.join(
+      tempPath,
+      "safe-acquisition-concurrent"
+    );
+    const concurrentSettings = {
+      cacheDirectory: concurrentCacheDirectory,
+      h5pHubBaseUrl: fixtureServer.baseUrl + hubBasePath,
+      maxDownloadSizeBytes: 5 * 1024 * 1024,
+      timeoutMs: 2000,
+    };
+    const concurrentPackages = await Promise.all([
+      H5pPackage.createFromHub("H5P.Flashcards", "en", concurrentSettings),
+      H5pPackage.createFromHub("H5P.Flashcards", "en", concurrentSettings),
+    ]);
+    assert.strictEqual(
+      concurrentPackages[0].h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    assert.strictEqual(
+      concurrentPackages[1].h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(
+        path.join(concurrentCacheDirectory, "H5P.Flashcards.h5p")
+      ),
+      fs.readFileSync(sourcePackagePath)
+    );
+    assertNoAcquisitionResidue(concurrentCacheDirectory);
+
+    await stopHttpFixtureServer(fixtureServer);
+    fixtureServerStopped = true;
+    const offlinePackage = await H5pPackage.createFromHub(
+      "H5P.Flashcards",
+      "en",
+      acquisitionSettings
+    );
+    assert.strictEqual(
+      offlinePackage.h5pMetadata.mainLibrary,
+      "H5P.Flashcards"
+    );
+    assertNoAcquisitionResidue(populatedCacheDirectory);
+  } finally {
+    if (!fixtureServerStopped) {
+      await stopHttpFixtureServer(fixtureServer);
+    }
+  }
 }
 
 async function testGuessItSentences(tempPath) {
@@ -1216,6 +1398,11 @@ async function main() {
       tempPath
     );
     await runTest("GuessIt cached library bundle loader", testLibraryBundle, tempPath);
+    await runTest(
+      "Safe and testable package acquisition",
+      testSafePackageAcquisition,
+      tempPath
+    );
     await runTest("GuessIt sentence importer", testGuessItSentences, tempPath);
     await runTest("GuessIt Wordle importer", testGuessItWordle, tempPath);
     fixtureServer = await startHttpFixtureServer();

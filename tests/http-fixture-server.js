@@ -4,6 +4,9 @@ const path = require("path");
 
 const imageBytes = fs.readFileSync(path.join(__dirname, "image1.jpg"));
 const audioBytes = fs.readFileSync(path.join(__dirname, "sound.mp3"));
+const flashcardsPackageBytes = fs.readFileSync(
+  path.join(__dirname, "..", "content-type-cache", "H5P.Flashcards.h5p")
+);
 
 function sendBytes(response, statusCode, contentType, bytes) {
   response.writeHead(statusCode, {
@@ -43,6 +46,53 @@ const server = http.createServer((request, response) => {
       return;
     case "/connection-failure":
       request.socket.destroy();
+      return;
+    case "/hub/v1/content-types/H5P.Flashcards":
+      sendBytes(
+        response,
+        200,
+        "application/octet-stream",
+        flashcardsPackageBytes
+      );
+      return;
+    case "/hub/v1/content-types/H5P.InvalidZip":
+      sendBytes(
+        response,
+        200,
+        "application/octet-stream",
+        Buffer.from("This is not a ZIP archive.")
+      );
+      return;
+    case "/hub/v1/content-types/H5P.Html":
+      sendBytes(
+        response,
+        200,
+        "text/html; charset=utf-8",
+        Buffer.from("<!doctype html><html><body>Error</body></html>")
+      );
+      return;
+    case "/hub/v1/content-types/H5P.Status404":
+      response.writeHead(404, { "Content-Type": "text/plain" });
+      response.end("Hub package not found.");
+      return;
+    case "/hub/v1/content-types/H5P.Status500":
+      response.writeHead(500, { "Content-Type": "text/plain" });
+      response.end("Hub package server error.");
+      return;
+    case "/hub/v1/content-types/H5P.ConnectionReset":
+      request.socket.destroy();
+      return;
+    case "/hub/v1/content-types/H5P.Timeout":
+      setTimeout(() => {
+        if (!response.destroyed) {
+          sendBytes(
+            response,
+            200,
+            "application/octet-stream",
+            flashcardsPackageBytes
+          );
+        }
+      }, 250);
       return;
     default:
       response.writeHead(404, { "Content-Type": "text/plain" });

@@ -28,6 +28,27 @@ interface H5pLibraryRecord {
   definition: H5pLibraryDefinition;
 }
 
+export interface H5pPackageSource {
+  machineName: string;
+  cacheFilename: string;
+  downloadUrl: string;
+}
+
+export interface H5pPackageAcquisitionSettings {
+  cacheDirectory?: string;
+  h5pHubBaseUrl?: string;
+  customPackageSources?: ReadonlyArray<H5pPackageSource>;
+  timeoutMs?: number;
+  maxDownloadSizeBytes?: number;
+  maxRedirects?: number;
+}
+
+interface PendingCachePublication {
+  cachePath: string;
+  sourceDescription: string;
+  temporaryPath: string;
+}
+
 export type H5pPackageMode = "full" | "minimal";
 
 /**
@@ -42,11 +63,15 @@ export class H5pPackage {
    */
   public static async createFromHub(
     contentTypeName: string,
-    language: string
+    language: string,
+    acquisitionSettings: H5pPackageAcquisitionSettings = {}
   ): Promise<H5pPackage> {
-    const pack = new H5pPackage(contentTypeName);
-    await pack.get();
-    await pack.initialize(language);
+    const pack = new H5pPackage(
+      contentTypeName,
+      undefined,
+      acquisitionSettings
+    );
+    await pack.load(language);
     return pack;
   }
 
@@ -60,21 +85,25 @@ export class H5pPackage {
     language: string
   ): Promise<H5pPackage> {
     const pack = new H5pPackage(contentTypeName, packagePath);
-    await pack.get();
-    await pack.initialize(language);
+    await pack.load(language);
     return pack;
   }
 
   public languageStrings: LanguageStrings;
   public h5pMetadata: any;
 
-  private h5pHubUrl = "https://api.h5p.org/v1/";
   private packageZip: jszip;
+  private pendingCachePublication?: PendingCachePublication;
   private static projectRoot = path.resolve(__dirname, "..");
+  private static defaultH5pHubBaseUrl = "https://api.h5p.org/v1/";
+  private static defaultMaxDownloadSizeBytes = 50 * 1024 * 1024;
+  private static defaultMaxRedirects = 5;
+  private static defaultTimeoutMs = 30000;
 
   private constructor(
     private contentTypeName: string,
-    private packagePath?: string
+    private packagePath?: string,
+    private acquisitionSettings: H5pPackageAcquisitionSettings = {}
   ) {}
 
   /**
@@ -136,68 +165,278 @@ export class H5pPackage {
     console.log(`Stored ${packageMode} H5P package at ${path}.`);
   }
 
+  private async load(language: string): Promise<void> {
+    try {
+      await this.get();
+      await this.initialize(language);
+      await this.publishPendingDownload(language);
+    } finally {
+      await this.cleanupPendingDownload();
+    }
+  }
+
   /**
-   * Downloads the package from the h5p hub
-   * @param contentTypeName The name of the package to download.
-   * @returns The binary data of the package
+   * Downloads a package or uses a locally cached copy and loads the content for
+   * further processing. A download remains in a temporary file until the
+   * package has been initialized successfully.
    */
-  private async downloadContentType(
-    contentTypeName: string
-  ): Promise<ArrayBuffer> {
+  private async get(): Promise<void> {
+    if (this.packagePath) {
+      const packagePath = this.resolveProjectPath(this.packagePath);
+      if (!(await fsExtra.pathExists(packagePath))) {
+        throw new Error(`H5P package file not found: ${packagePath}`);
+      }
+      this.packageZip = await this.openPackage(
+        await fsExtra.readFile(packagePath),
+        packagePath,
+        false
+      );
+      console.log(`Using H5P package from ${packagePath}`);
+      return;
+    }
+
+    const customSource = this.findCustomPackageSource(this.contentTypeName);
+    const cachePath = await this.resolveCachedPackagePath(
+      this.contentTypeName,
+      customSource && customSource.cacheFilename
+    );
+    if (await fsExtra.pathExists(cachePath)) {
+      this.packageZip = await this.openPackage(
+        await fsExtra.readFile(cachePath),
+        cachePath,
+        true
+      );
+      console.log(`Using cached content type package from ${cachePath}`);
+      return;
+    }
+
+    const sourceUrl = customSource
+      ? customSource.downloadUrl
+      : this.h5pHubUrl(this.contentTypeName);
+    const sourceDescription = customSource
+      ? `custom package source ${sourceUrl}`
+      : "H5P Hub";
+    await fsExtra.ensureDir(path.dirname(cachePath));
+    const temporaryPath = this.createTemporaryPackagePath(cachePath);
+    this.pendingCachePublication = {
+      cachePath,
+      sourceDescription,
+      temporaryPath
+    };
+    await this.downloadPackageToFile(
+      sourceUrl,
+      sourceDescription,
+      temporaryPath
+    );
+    this.packageZip = await this.openPackage(
+      await fsExtra.readFile(temporaryPath),
+      temporaryPath,
+      false,
+      true
+    );
+  }
+
+  private async downloadPackageToFile(
+    sourceUrl: string,
+    sourceDescription: string,
+    temporaryPath: string
+  ): Promise<void> {
+    const timeoutMs =
+      this.acquisitionSettings.timeoutMs === undefined
+        ? H5pPackage.defaultTimeoutMs
+        : this.acquisitionSettings.timeoutMs;
+    const maxDownloadSizeBytes =
+      this.acquisitionSettings.maxDownloadSizeBytes === undefined
+        ? H5pPackage.defaultMaxDownloadSizeBytes
+        : this.acquisitionSettings.maxDownloadSizeBytes;
+    const maxRedirects =
+      this.acquisitionSettings.maxRedirects === undefined
+        ? H5pPackage.defaultMaxRedirects
+        : this.acquisitionSettings.maxRedirects;
+
     let response;
     try {
-      response = await axios.get(
-        this.h5pHubUrl + "content-types/" + contentTypeName,
-        { responseType: "arraybuffer" }
+      response = await axios.get(sourceUrl, {
+        maxContentLength: maxDownloadSizeBytes,
+        maxRedirects,
+        responseType: "arraybuffer",
+        timeout: timeoutMs,
+        validateStatus: () => true
+      });
+    } catch (error) {
+      throw this.createDownloadError(
+        error,
+        sourceDescription,
+        timeoutMs,
+        maxDownloadSizeBytes
       );
+    }
+
+    if (response.status !== 200) {
+      throw new Error(
+        `Could not download content type ${this.contentTypeName} from ${sourceDescription}: HTTP ${response.status}.`
+      );
+    }
+
+    const dataBuffer = toBuffer(response.data);
+    if (dataBuffer.byteLength > maxDownloadSizeBytes) {
+      throw new Error(
+        `Could not download content type ${this.contentTypeName} from ${sourceDescription}: ` +
+          `download exceeds the ${maxDownloadSizeBytes}-byte limit.`
+      );
+    }
+    if (this.isObviousErrorResponse(response.headers, dataBuffer)) {
+      throw new Error(
+        `Could not download content type ${this.contentTypeName} from ${sourceDescription}: ` +
+          "the response is HTML or text, not an H5P package."
+      );
+    }
+
+    try {
+      await fsExtra.writeFile(temporaryPath, dataBuffer, { flag: "wx" });
     } catch (error) {
       throw new Error(
-        `Could not download content type ${contentTypeName} from the H5P Hub: ${this.errorMessage(
+        `Could not write temporary H5P package ${temporaryPath}: ${this.errorMessage(
           error
         )}`
       );
     }
-    if (response.status !== 200) {
-      throw new Error(
-        `Could not download content type ${contentTypeName} from the H5P Hub (HTTP ${response.status}).`
-      );
-    }
-    return response.data;
   }
 
-  /**
-   * Downloads the h5p package from the hub or uses a locally cached copy and loads the
-   * content for further processing.
-   * @returns the jszip object
-   */
-  private async get(): Promise<void> {
-    const localPath = this.packagePath
-      ? this.resolveProjectPath(this.packagePath)
-      : await this.resolveCachedPackagePath(this.contentTypeName);
-    let dataBuffer: Buffer;
-    if (this.packagePath) {
-      if (!(await fsExtra.pathExists(localPath))) {
-        throw new Error(`H5P package file not found: ${localPath}`);
+  private async openPackage(
+    dataBuffer: Buffer,
+    packagePath: string,
+    cachedPackage: boolean,
+    downloadedPackage: boolean = false
+  ): Promise<jszip> {
+    try {
+      return await jszip.loadAsync(dataBuffer);
+    } catch (error) {
+      if (cachedPackage) {
+        throw new Error(
+          `Could not open cached H5P package ${packagePath}: ${this.errorMessage(
+            error
+          )}. Remove the cached file and retry.`
+        );
       }
-      dataBuffer = await fsExtra.readFile(localPath);
-      console.log(`Using H5P package from ${localPath}`);
-    } else if (!(await fsExtra.pathExists(localPath))) {
-      dataBuffer = toBuffer(await this.downloadContentType(this.contentTypeName));
-      await fsExtra.ensureDir(path.dirname(localPath));
-      await fsExtra.writeFile(localPath, dataBuffer);
-      console.log(`Downloaded content type package ${this.contentTypeName} from H5P Hub.`);
-    } else {
-      dataBuffer = await fsExtra.readFile(localPath);
-      console.log(`Using cached content type package from ${localPath}`);
+      const description = downloadedPackage
+        ? `downloaded H5P package for ${this.contentTypeName}`
+        : `H5P package ${packagePath}`;
+      throw new Error(
+        `Could not open ${description}: ${this.errorMessage(error)}`
+      );
+    }
+  }
+
+  private async publishPendingDownload(language: string): Promise<void> {
+    const pending = this.pendingCachePublication;
+    if (!pending) {
+      return;
     }
 
     try {
-      this.packageZip = await jszip.loadAsync(dataBuffer);
+      await fs.promises.link(pending.temporaryPath, pending.cachePath);
+      console.log(
+        `Downloaded content type package ${this.contentTypeName} from ${pending.sourceDescription}.`
+      );
     } catch (error) {
-      throw new Error(
-        `Could not open H5P package ${localPath}: ${this.errorMessage(error)}`
+      if (!error || error.code !== "EEXIST") {
+        throw new Error(
+          `Could not publish downloaded H5P package to ${pending.cachePath}: ${this.errorMessage(
+            error
+          )}`
+        );
+      }
+
+      try {
+        this.packageZip = await this.openPackage(
+          await fsExtra.readFile(pending.cachePath),
+          pending.cachePath,
+          true
+        );
+        await this.initialize(language);
+      } catch (cacheError) {
+        throw new Error(
+          `Another process created ${pending.cachePath}, but the cached package is invalid: ` +
+            `${this.errorMessage(cacheError)}`
+        );
+      }
+      console.log(
+        `Using cached content type package published by another process at ${pending.cachePath}`
       );
     }
+  }
+
+  private async cleanupPendingDownload(): Promise<void> {
+    if (!this.pendingCachePublication) {
+      return;
+    }
+    const temporaryPath = this.pendingCachePublication.temporaryPath;
+    this.pendingCachePublication = undefined;
+    try {
+      await fsExtra.remove(temporaryPath);
+    } catch (error) {
+      throw new Error(
+        `Could not remove temporary H5P package ${temporaryPath}: ${this.errorMessage(
+          error
+        )}`
+      );
+    }
+  }
+
+  private createDownloadError(
+    error: any,
+    sourceDescription: string,
+    timeoutMs: number,
+    maxDownloadSizeBytes: number
+  ): Error {
+    if (
+      error &&
+      (error.code === "ECONNABORTED" ||
+        error.code === "ETIMEDOUT" ||
+        /timeout/i.test(this.errorMessage(error)))
+    ) {
+      return new Error(
+        `Could not download content type ${this.contentTypeName} from ${sourceDescription}: ` +
+          `request timed out after ${timeoutMs} ms.`
+      );
+    }
+    if (error && error.code === "ECONNRESET") {
+      return new Error(
+        `Could not download content type ${this.contentTypeName} from ${sourceDescription}: connection reset.`
+      );
+    }
+    if (/maxContentLength|larger than|max size/i.test(this.errorMessage(error))) {
+      return new Error(
+        `Could not download content type ${this.contentTypeName} from ${sourceDescription}: ` +
+          `download exceeds the ${maxDownloadSizeBytes}-byte limit.`
+      );
+    }
+    return new Error(
+      `Could not download content type ${this.contentTypeName} from ${sourceDescription}: ${this.errorMessage(
+        error
+      )}`
+    );
+  }
+
+  private isObviousErrorResponse(headers: any, dataBuffer: Buffer): boolean {
+    const contentType = String(
+      headers && headers["content-type"] ? headers["content-type"] : ""
+    ).toLowerCase();
+    if (contentType.startsWith("text/") || contentType.indexOf("html") !== -1) {
+      return true;
+    }
+    const prefix = dataBuffer
+      .slice(0, Math.min(dataBuffer.byteLength, 512))
+      .toString("utf8")
+      .trim()
+      .toLowerCase();
+    return (
+      prefix.startsWith("<!doctype html") ||
+      prefix.startsWith("<html") ||
+      prefix.startsWith("<head") ||
+      prefix.startsWith("<body")
+    );
   }
 
   private getLibraryInformation(
@@ -439,9 +678,54 @@ export class H5pPackage {
       : path.resolve(H5pPackage.projectRoot, packagePath);
   }
 
-  private async resolveCachedPackagePath(contentTypeName: string): Promise<string> {
-    const cacheDirectory = path.resolve(H5pPackage.projectRoot, "content-type-cache");
-    const expectedFilename = `${contentTypeName}.h5p`;
+  private findCustomPackageSource(
+    contentTypeName: string
+  ): H5pPackageSource | undefined {
+    return (this.acquisitionSettings.customPackageSources || []).find(
+      source =>
+        source.machineName.toLowerCase() === contentTypeName.toLowerCase()
+    );
+  }
+
+  private h5pHubUrl(contentTypeName: string): string {
+    const configuredBaseUrl =
+      this.acquisitionSettings.h5pHubBaseUrl ||
+      H5pPackage.defaultH5pHubBaseUrl;
+    const baseUrl = configuredBaseUrl.endsWith("/")
+      ? configuredBaseUrl
+      : configuredBaseUrl + "/";
+    return baseUrl + "content-types/" + contentTypeName;
+  }
+
+  private createTemporaryPackagePath(cachePath: string): string {
+    const uniqueSuffix =
+      `${process.pid}-${Date.now()}-` +
+      Math.random().toString(16).slice(2);
+    return path.join(
+      path.dirname(cachePath),
+      `.${path.basename(cachePath)}.${uniqueSuffix}.tmp`
+    );
+  }
+
+  private cacheDirectory(): string {
+    if (!this.acquisitionSettings.cacheDirectory) {
+      return path.resolve(H5pPackage.projectRoot, "content-type-cache");
+    }
+    return path.isAbsolute(this.acquisitionSettings.cacheDirectory)
+      ? this.acquisitionSettings.cacheDirectory
+      : path.resolve(
+          H5pPackage.projectRoot,
+          this.acquisitionSettings.cacheDirectory
+        );
+  }
+
+  private async resolveCachedPackagePath(
+    contentTypeName: string,
+    configuredFilename?: string
+  ): Promise<string> {
+    const cacheDirectory = this.cacheDirectory();
+    const expectedFilename =
+      configuredFilename || `${contentTypeName}.h5p`;
     if (await fsExtra.pathExists(cacheDirectory)) {
       const entries = await fsExtra.readdir(cacheDirectory);
       const matchingFilename = entries.find(
