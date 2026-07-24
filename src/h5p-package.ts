@@ -1,4 +1,5 @@
 import axios from "axios";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as fsExtra from "fs-extra";
 import * as jszip from "jszip";
@@ -6,6 +7,12 @@ import * as path from "path";
 
 import { toBuffer } from "./helpers";
 import { LanguageStrings } from "./language-strings";
+import {
+  customPackageSources,
+  H5pPackageSource
+} from "./custom-package-sources";
+
+export { H5pPackageSource } from "./custom-package-sources";
 
 interface H5pLibraryDependency {
   machineName: string;
@@ -21,17 +28,14 @@ interface H5pLibraryDefinition {
   runnable?: number;
   embedTypes?: string[];
   preloadedDependencies?: H5pLibraryDependency[];
+  dynamicDependencies?: H5pLibraryDependency[];
+  editorDependencies?: H5pLibraryDependency[];
+  patchVersion?: number;
 }
 
 interface H5pLibraryRecord {
   directory: string;
   definition: H5pLibraryDefinition;
-}
-
-export interface H5pPackageSource {
-  machineName: string;
-  cacheFilename: string;
-  downloadUrl: string;
 }
 
 export interface H5pPackageAcquisitionSettings {
@@ -93,6 +97,7 @@ export class H5pPackage {
   public h5pMetadata: any;
 
   private packageZip: jszip;
+  private cachedPackagePath?: string;
   private pendingCachePublication?: PendingCachePublication;
   private static projectRoot = path.resolve(__dirname, "..");
   private static defaultH5pHubBaseUrl = "https://api.h5p.org/v1/";
@@ -168,7 +173,18 @@ export class H5pPackage {
   private async load(language: string): Promise<void> {
     try {
       await this.get();
-      await this.initialize(language);
+      try {
+        await this.initialize(language);
+      } catch (error) {
+        if (this.cachedPackagePath) {
+          throw new Error(
+            `Cached H5P package ${this.cachedPackagePath} is invalid: ${this.errorMessage(
+              error
+            )}. Remove the cached file and retry.`
+          );
+        }
+        throw error;
+      }
       await this.publishPendingDownload(language);
     } finally {
       await this.cleanupPendingDownload();
@@ -201,6 +217,7 @@ export class H5pPackage {
       customSource && customSource.cacheFilename
     );
     if (await fsExtra.pathExists(cachePath)) {
+      this.cachedPackagePath = cachePath;
       this.packageZip = await this.openPackage(
         await fsExtra.readFile(cachePath),
         cachePath,
@@ -228,12 +245,19 @@ export class H5pPackage {
       sourceDescription,
       temporaryPath
     );
+    const downloadedPackage = await fsExtra.readFile(temporaryPath);
+    if (customSource) {
+      this.validateCustomPackageChecksum(downloadedPackage, customSource);
+    }
     this.packageZip = await this.openPackage(
-      await fsExtra.readFile(temporaryPath),
+      downloadedPackage,
       temporaryPath,
       false,
       true
     );
+    if (customSource) {
+      await this.validateCustomPackageStructure(customSource);
+    }
   }
 
   private async downloadPackageToFile(
@@ -437,6 +461,179 @@ export class H5pPackage {
       prefix.startsWith("<head") ||
       prefix.startsWith("<body")
     );
+  }
+
+  private validateCustomPackageChecksum(
+    dataBuffer: Buffer,
+    source: H5pPackageSource
+  ): void {
+    const actualChecksum = crypto
+      .createHash("sha256")
+      .update(dataBuffer)
+      .digest("hex")
+      .toUpperCase();
+    const expectedChecksum = source.sha256.toUpperCase();
+    if (actualChecksum !== expectedChecksum) {
+      throw new Error(
+        `Downloaded package checksum mismatch for ${source.machineName}: ` +
+          `expected ${expectedChecksum}, received ${actualChecksum}.`
+      );
+    }
+  }
+
+  private async validateCustomPackageStructure(
+    source: H5pPackageSource
+  ): Promise<void> {
+    const libraryJsonPath =
+      `${source.expectedLibraryDirectory}/library.json`;
+    const semanticsPath =
+      `${source.expectedLibraryDirectory}/semantics.json`;
+    const libraryEntry = this.packageZip.file(libraryJsonPath);
+    if (!libraryEntry) {
+      throw new Error(
+        `Downloaded package for ${source.machineName} is missing expected library definition ${libraryJsonPath}.`
+      );
+    }
+    if (!this.packageZip.file(semanticsPath)) {
+      throw new Error(
+        `Downloaded package for ${source.machineName} is missing ${semanticsPath}.`
+      );
+    }
+
+    let definition: H5pLibraryDefinition;
+    try {
+      definition = JSON.parse(await libraryEntry.async("text"));
+    } catch (error) {
+      throw new Error(
+        `Invalid library definition ${libraryJsonPath}: ${this.errorMessage(
+          error
+        )}`
+      );
+    }
+
+    if (definition.machineName !== source.machineName) {
+      throw new Error(
+        `Downloaded package library name ${definition.machineName} does not match expected ${source.machineName}.`
+      );
+    }
+    if (
+      definition.majorVersion !== source.version.major ||
+      definition.minorVersion !== source.version.minor ||
+      definition.patchVersion !== source.version.patch
+    ) {
+      throw new Error(
+        `Downloaded package version ${definition.majorVersion}.${definition.minorVersion}.${definition.patchVersion} ` +
+          `does not match expected ${source.version.major}.${source.version.minor}.${source.version.patch} ` +
+          `for ${source.machineName}.`
+      );
+    }
+    if (definition.runnable !== 1) {
+      throw new Error(
+        `Downloaded package library ${source.machineName} must declare runnable as 1.`
+      );
+    }
+
+    const libraries = await this.loadLibraryCatalog();
+    const mainLibrary = libraries.find(
+      library =>
+        library.directory === source.expectedLibraryDirectory &&
+        library.definition.machineName === source.machineName &&
+        library.definition.majorVersion === source.version.major &&
+        library.definition.minorVersion === source.version.minor
+    );
+    if (!mainLibrary) {
+      throw new Error(
+        `Downloaded package contains no valid ${source.machineName} ` +
+          `${source.version.major}.${source.version.minor} library.`
+      );
+    }
+    this.validateCustomDependencyClosure(libraries, mainLibrary, source);
+
+    const metadataEntry = this.packageZip.file("h5p.json");
+    if (metadataEntry) {
+      let metadata: any;
+      try {
+        metadata = JSON.parse(await metadataEntry.async("text"));
+      } catch (error) {
+        throw new Error(`Invalid h5p.json: ${this.errorMessage(error)}`);
+      }
+      if (
+        !metadata ||
+        metadata.mainLibrary !== source.machineName ||
+        !Array.isArray(metadata.preloadedDependencies)
+      ) {
+        throw new Error(
+          `Downloaded package h5p.json does not identify compatible main library ${source.machineName}.`
+        );
+      }
+      const mainDependency = metadata.preloadedDependencies.find(
+        dependency =>
+          dependency.machineName === source.machineName &&
+          +dependency.majorVersion === source.version.major &&
+          +dependency.minorVersion === source.version.minor
+      );
+      if (!mainDependency) {
+        throw new Error(
+          `Downloaded package h5p.json does not declare compatible main library ` +
+            `${source.machineName} ${source.version.major}.${source.version.minor}.`
+        );
+      }
+    }
+  }
+
+  private validateCustomDependencyClosure(
+    libraries: H5pLibraryRecord[],
+    mainLibrary: H5pLibraryRecord,
+    source: H5pPackageSource
+  ): void {
+    const visited = new Set<string>();
+    const visit = (library: H5pLibraryRecord) => {
+      const libraryKey = this.libraryKey({
+        machineName: library.definition.machineName,
+        majorVersion: library.definition.majorVersion,
+        minorVersion: library.definition.minorVersion
+      });
+      if (visited.has(libraryKey)) {
+        return;
+      }
+      visited.add(libraryKey);
+
+      const dependencyGroups: Array<{
+        name: string;
+        dependencies?: H5pLibraryDependency[];
+      }> = [
+        {
+          name: "preloaded",
+          dependencies: library.definition.preloadedDependencies
+        },
+        {
+          name: "dynamic",
+          dependencies: library.definition.dynamicDependencies
+        },
+        {
+          name: "editor",
+          dependencies: library.definition.editorDependencies
+        }
+      ];
+      for (const group of dependencyGroups) {
+        for (const dependency of group.dependencies || []) {
+          const dependencyLibrary = this.findLibraryRecord(
+            libraries,
+            dependency
+          );
+          if (!dependencyLibrary) {
+            throw new Error(
+              `Downloaded package for ${source.machineName} is missing ` +
+                `${group.name} dependency ${dependency.machineName} ` +
+                `${dependency.majorVersion}.${dependency.minorVersion} ` +
+                `required by ${library.definition.machineName}.`
+            );
+          }
+          visit(dependencyLibrary);
+        }
+      }
+    };
+    visit(mainLibrary);
   }
 
   private getLibraryInformation(
@@ -681,7 +878,11 @@ export class H5pPackage {
   private findCustomPackageSource(
     contentTypeName: string
   ): H5pPackageSource | undefined {
-    return (this.acquisitionSettings.customPackageSources || []).find(
+    const configuredSources =
+      this.acquisitionSettings.customPackageSources === undefined
+        ? customPackageSources
+        : this.acquisitionSettings.customPackageSources;
+    return configuredSources.find(
       source =>
         source.machineName.toLowerCase() === contentTypeName.toLowerCase()
     );
