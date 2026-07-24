@@ -392,8 +392,8 @@ async function testFlashcards(tempPath) {
 
   assert.strictEqual(metadata.title, "Regression Flashcards");
   assert.strictEqual(metadata.mainLibrary, "H5P.Flashcards");
-  assertDependency(metadata, "H5P.Flashcards", 1, 5);
-  assert.ok(zip.file("H5P.Flashcards-1.5/library.json"));
+  assertDependency(metadata, "H5P.Flashcards", 1, 7);
+  assert.ok(zip.file("H5P.Flashcards-1.7/library.json"));
 
   assert.strictEqual(content.description, "Regression description");
   assert.strictEqual(content.caseSensitive, false);
@@ -442,8 +442,8 @@ async function testDialogCards(tempPath) {
 
   assert.strictEqual(metadata.title, "Regression Dialog Cards");
   assert.strictEqual(metadata.mainLibrary, "H5P.Dialogcards");
-  assertDependency(metadata, "H5P.Dialogcards", 1, 8);
-  assert.ok(zip.file("H5P.Dialogcards-1.8/library.json"));
+  assertDependency(metadata, "H5P.Dialogcards", 1, 9);
+  assert.ok(zip.file("H5P.Dialogcards-1.9/library.json"));
 
   assert.strictEqual(content.mode, "normal");
   assert.deepStrictEqual(content.behaviour, {
@@ -1203,8 +1203,8 @@ async function main() {
   let fixtureServer;
 
   try {
-    await runTest("Flashcards 1.5 importer", testFlashcards, tempPath);
-    await runTest("Dialog Cards 1.8 importer", testDialogCards, tempPath);
+    await runTest("Flashcards 1.7 importer", testFlashcards, tempPath);
+    await runTest("Dialog Cards 1.9 importer", testDialogCards, tempPath);
     await runTest(
       "Dialog Cards Papi Jo 1.17 legacy CSV importer",
       testDialogCardsPapiJo,
