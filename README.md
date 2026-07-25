@@ -2,6 +2,19 @@
 
 This is a command line utility that allows you to mass create H5P content from input files using the command line. It is written in TypeScript and runs on NodeJS, meaning it's platform independent. It supports *Flashcards*, *Dialog Cards*, *Dialog Cards Papi Jo*, and *GuessIt*. You can use the infrastructure provided here to add functionality for other content types. Pull requests are welcomed!
 
+## Automatic H5P library retrieval
+
+When a required package is absent from `content-type-cache`, official H5P libraries such as Flashcards and Dialog Cards are retrieved through the H5P Hub fallback. The custom `H5P.DialogcardsPapiJo` and `H5P.GuessIt` libraries are retrieved from pinned GitHub Release assets instead.
+
+| Library | Retrieval source |
+|----------|------------------|
+| Flashcards | Official H5P Hub |
+| Dialog Cards | Official H5P Hub |
+| Dialog Cards Papi Jo | Pinned GitHub Release |
+| GuessIt | Pinned GitHub Release |
+
+Downloads are validated, including pinned SHA-256 checksums for the custom packages, and then cached locally. Later runs reuse valid cached packages without downloading them again, allowing conversions to work offline. See [H5P package sources](#h5p-package-sources) for pinned versions, checksums, and troubleshooting.
+
 ## Node.js support
 
 This project supports Node.js 22 from version 22.13.0 onward and Node.js 24. Node.js 22 is the preferred version for local development and is recorded in `.nvmrc`.
@@ -121,7 +134,9 @@ When an official package is absent, the loader retains its existing H5P Hub fall
 
 Downloads use bounded redirects, a timeout, and a maximum response size. A package is written to a temporary file in the cache directory, then its checksum, ZIP structure, library identity and version, runnable metadata, semantics, and dependency graph are validated before it is published atomically under the canonical cache filename. Failed downloads and validations leave no cache entry. A successfully cached package is reused on later runs, including offline runs.
 
-Cached packages are never refreshed or silently repaired. If a cache entry is corrupt or an intentionally newer pinned source is introduced, remove the exact cached package file and run the command again to trigger retrieval. Existing cache entries are not rechecked against the source registry checksum during normal lookup.
+### Refreshing a cached package
+
+Valid cached packages are not refreshed automatically. If a cached package is obsolete or corrupt, remove the relevant file from `content-type-cache` and run the command again. The package will be retrieved again from its configured H5P Hub or pinned GitHub Release source.
 
 A pinned package can be either a complete content package or a library bundle. Keeping packages in the repository makes output reproducible and allows the CLI to work offline.
 
