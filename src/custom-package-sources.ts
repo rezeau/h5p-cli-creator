@@ -33,15 +33,15 @@ export const customPackageSources: ReadonlyArray<H5pPackageSource> = [
     machineName: "H5P.GuessIt",
     version: {
       major: 1,
-      minor: 6,
+      minor: 7,
       patch: 0
     },
     cacheFilename: "H5P.GuessIt.h5p",
     downloadUrl:
       "https://github.com/rezeau/h5p-guessit-papijo/releases/download/" +
-      "v1.6.0/H5P.GuessIt-1.6.0.h5p",
-    expectedLibraryDirectory: "H5P.GuessIt-1.6",
+      "v1.7.0/H5P.GuessIt-1.7.0.h5p",
+    expectedLibraryDirectory: "H5P.GuessIt-1.7",
     sha256:
-      "70868659869901FB5E058992527F01FE3CFA137BFF3E492EBE2E607A9D33CB42"
+      "04B987E8C20D2E76FD21DC8A4CDF5926FF3E20AC889BE9A98CB75872B57A968A"
   }
 ];

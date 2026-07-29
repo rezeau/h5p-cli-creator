@@ -348,13 +348,13 @@ function assertDependency(metadata, machineName, majorVersion, minorVersion) {
 function assertGuessItDevelopmentArtifactsAbsent(zip) {
   const entries = Object.keys(zip.files);
   assert.strictEqual(
-    entries.some((entry) => entry.startsWith("H5P.GuessIt-1.6/tests/")),
+    entries.some((entry) => entry.startsWith("H5P.GuessIt-1.7/tests/")),
     false,
     "GuessIt output must not contain its library test directory"
   );
-  assert.strictEqual(zip.file("H5P.GuessIt-1.6/AGENTS.md"), null);
+  assert.strictEqual(zip.file("H5P.GuessIt-1.7/AGENTS.md"), null);
   assert.strictEqual(
-    zip.file("H5P.GuessIt-1.6/WORDLE-FRENCH-ACCENTS.md"),
+    zip.file("H5P.GuessIt-1.7/WORDLE-FRENCH-ACCENTS.md"),
     null
   );
 }
@@ -610,7 +610,7 @@ async function testLibraryBundle(tempPath) {
   assert.strictEqual(h5pPackage.h5pMetadata.mainLibrary, "H5P.GuessIt");
   assert.strictEqual(h5pPackage.h5pMetadata.title, "Guess It");
   assert.deepStrictEqual(h5pPackage.h5pMetadata.embedTypes, ["iframe"]);
-  assertDependency(h5pPackage.h5pMetadata, "H5P.GuessIt", 1, 6);
+  assertDependency(h5pPackage.h5pMetadata, "H5P.GuessIt", 1, 7);
   assertDependency(h5pPackage.h5pMetadata, "H5P.Timer", 0, 4);
   assertDependency(h5pPackage.h5pMetadata, "H5P.Question", 1, 5);
   assertDependency(h5pPackage.h5pMetadata, "H5P.Audio", 1, 5);
@@ -623,7 +623,7 @@ async function testLibraryBundle(tempPath) {
   const { zip, metadata, content } = await assertFullPackage(outputPath);
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
   assert.deepStrictEqual(content, { questions: [] });
-  assert.ok(zip.file("H5P.GuessIt-1.6/library.json"));
+  assert.ok(zip.file("H5P.GuessIt-1.7/library.json"));
   assert.ok(zip.file("H5P.Timer-0.4/library.json"));
   assert.ok(zip.file("H5P.Question-1.5/library.json"));
   assertGuessItDevelopmentArtifactsAbsent(zip);
@@ -835,14 +835,14 @@ async function testPinnedCustomPackageSources(tempPath) {
       },
       {
         machineName: "H5P.GuessIt",
-        version: { major: 1, minor: 6, patch: 0 },
+        version: { major: 1, minor: 7, patch: 0 },
         cacheFilename: "H5P.GuessIt.h5p",
         downloadUrl:
           "https://github.com/rezeau/h5p-guessit-papijo/releases/" +
-          "download/v1.6.0/H5P.GuessIt-1.6.0.h5p",
-        expectedLibraryDirectory: "H5P.GuessIt-1.6",
+          "download/v1.7.0/H5P.GuessIt-1.7.0.h5p",
+        expectedLibraryDirectory: "H5P.GuessIt-1.7",
         sha256:
-          "70868659869901FB5E058992527F01FE3CFA137BFF3E492EBE2E607A9D33CB42",
+          "04B987E8C20D2E76FD21DC8A4CDF5926FF3E20AC889BE9A98CB75872B57A968A",
       },
     ]
   );
@@ -850,7 +850,7 @@ async function testPinnedCustomPackageSources(tempPath) {
   const fixtureServer = await startHttpFixtureServer();
   let fixtureServerStopped = false;
   const papiJoVersion = { major: 1, minor: 17, patch: 1 };
-  const guessItVersion = { major: 1, minor: 6, patch: 0 };
+  const guessItVersion = { major: 1, minor: 7, patch: 0 };
   const createPapiJoSource = (endpoint, sha256) =>
     createTestCustomSource(
       "H5P.DialogcardsPapiJo",
@@ -865,7 +865,7 @@ async function testPinnedCustomPackageSources(tempPath) {
       "H5P.GuessIt",
       guessItVersion,
       "H5P.GuessIt.h5p",
-      "H5P.GuessIt-1.6",
+      "H5P.GuessIt-1.7",
       fixtureServer.baseUrl + endpoint,
       sha256
     );
@@ -1319,8 +1319,8 @@ async function testGuessItSentences(tempPath) {
 
   assert.strictEqual(metadata.title, "Regression GuessIt Sentences");
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
-  assertDependency(metadata, "H5P.GuessIt", 1, 6);
-  assert.ok(zip.file("H5P.GuessIt-1.6/library.json"));
+  assertDependency(metadata, "H5P.GuessIt", 1, 7);
+  assert.ok(zip.file("H5P.GuessIt-1.7/library.json"));
   assertGuessItDevelopmentArtifactsAbsent(zip);
 
   assert.strictEqual(content.info, false);
@@ -1377,7 +1377,7 @@ async function testGuessItWordle(tempPath) {
   });
 
   assert.strictEqual(metadata.title, "Regression GuessIt Wordle");
-  assertDependency(metadata, "H5P.GuessIt", 1, 6);
+  assertDependency(metadata, "H5P.GuessIt", 1, 7);
   assertGuessItDevelopmentArtifactsAbsent(zip);
   assert.strictEqual(content.wordle, true);
   assert.deepStrictEqual(content.questions, []);
@@ -1845,7 +1845,7 @@ async function testPackageErrors(tempPath) {
       "H5P.GuessIt",
       "zz"
     ),
-    /Language file zz\.json not found for library H5P\.GuessIt 1\.6/
+    /Language file zz\.json not found for library H5P\.GuessIt 1\.7/
   );
 
   const emptyArchive = new JSZip();
