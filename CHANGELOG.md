@@ -2,6 +2,13 @@
 
 Notable changes to h5p-cli-creator are documented here.
 
+## Unreleased
+
+### Fixed
+
+- Upgrade the cached and pinned `H5P.GuessIt` package from 1.7.0 to 1.7.1, correcting the invalid ZIP directory entry in the previous release asset.
+- Reject H5P source packages containing explicit ZIP directory entries before they are used or cached.
+
 ## 0.4.1 - 2026-07-29
 
 ### Added
