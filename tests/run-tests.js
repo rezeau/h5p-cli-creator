@@ -265,6 +265,18 @@ async function assertZipFileBytes(zip, entryPath, expectedBytes) {
   );
 }
 
+function assertNoExplicitDirectoryEntries(zip, packageDescription) {
+  const directoryEntries = Object.keys(zip.files).filter(
+    (entryName) => zip.files[entryName].dir
+  );
+  assert.deepStrictEqual(
+    directoryEntries,
+    [],
+    `${packageDescription} contains forbidden ZIP directory entries: ` +
+      directoryEntries.join(", ")
+  );
+}
+
 function expectedLibraryEntry(dependency) {
   return (
     `${dependency.machineName}-${dependency.majorVersion}.` +
@@ -274,6 +286,7 @@ function expectedLibraryEntry(dependency) {
 
 async function assertFullPackage(packagePath, expectedMedia = {}) {
   const zip = await loadPackage(packagePath);
+  assertNoExplicitDirectoryEntries(zip, "Full package");
   const metadata = await readJson(zip, "h5p.json");
   const content = await readJson(zip, "content/content.json");
 
@@ -361,6 +374,7 @@ function assertGuessItDevelopmentArtifactsAbsent(zip) {
 
 async function assertMinimalPackage(packagePath, expectedMedia = {}) {
   const zip = await loadPackage(packagePath);
+  assertNoExplicitDirectoryEntries(zip, "Minimal package");
   const entries = Object.keys(zip.files);
   const unexpectedEntries = entries.filter(
     (entry) =>
@@ -623,7 +637,14 @@ async function testLibraryBundle(tempPath) {
   const { zip, metadata, content } = await assertFullPackage(outputPath);
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
   assert.deepStrictEqual(content, { questions: [] });
-  assert.ok(zip.file("H5P.GuessIt-1.7/library.json"));
+  const guessItDefinition = await readJson(
+    zip,
+    "H5P.GuessIt-1.7/library.json"
+  );
+  assert.strictEqual(guessItDefinition.machineName, "H5P.GuessIt");
+  assert.strictEqual(guessItDefinition.majorVersion, 1);
+  assert.strictEqual(guessItDefinition.minorVersion, 7);
+  assert.strictEqual(guessItDefinition.patchVersion, 1);
   assert.ok(zip.file("H5P.Timer-0.4/library.json"));
   assert.ok(zip.file("H5P.Question-1.5/library.json"));
   assertGuessItDevelopmentArtifactsAbsent(zip);
@@ -835,14 +856,14 @@ async function testPinnedCustomPackageSources(tempPath) {
       },
       {
         machineName: "H5P.GuessIt",
-        version: { major: 1, minor: 7, patch: 0 },
+        version: { major: 1, minor: 7, patch: 1 },
         cacheFilename: "H5P.GuessIt.h5p",
         downloadUrl:
           "https://github.com/rezeau/h5p-guessit-papijo/releases/" +
-          "download/v1.7.0/H5P.GuessIt-1.7.0.h5p",
+          "download/v1.7.1/H5P.GuessIt-1.7.1.h5p",
         expectedLibraryDirectory: "H5P.GuessIt-1.7",
         sha256:
-          "04B987E8C20D2E76FD21DC8A4CDF5926FF3E20AC889BE9A98CB75872B57A968A",
+          "48F3232D7A039F147369BF4A0B533C574229FE095ACCA4A87CC882B7DE806E17",
       },
     ]
   );
@@ -850,7 +871,7 @@ async function testPinnedCustomPackageSources(tempPath) {
   const fixtureServer = await startHttpFixtureServer();
   let fixtureServerStopped = false;
   const papiJoVersion = { major: 1, minor: 17, patch: 1 };
-  const guessItVersion = { major: 1, minor: 7, patch: 0 };
+  const guessItVersion = { major: 1, minor: 7, patch: 1 };
   const createPapiJoSource = (endpoint, sha256) =>
     createTestCustomSource(
       "H5P.DialogcardsPapiJo",
@@ -1119,6 +1140,13 @@ async function testPinnedCustomPackageSources(tempPath) {
         expectedError:
           /missing editor dependency H5PEditor\.VerticalTabs 1\.3/,
       },
+      {
+        name: "explicit-directory-entry",
+        endpoint: "/custom/explicit-directory-entry.h5p",
+        hashName: "explicitDirectoryEntry",
+        expectedError:
+          /forbidden ZIP directory entry "H5PEditor\.VerticalTabs-1\.3\/styles\/"/,
+      },
     ];
     for (const structureCase of structureCases) {
       const cacheDirectory = path.join(
@@ -1223,6 +1251,69 @@ async function testPinnedCustomPackageSources(tempPath) {
     );
     assert.deepStrictEqual(fs.readFileSync(preservedCachePath), preservedBytes);
     assertNoAcquisitionResidue(preservedCacheDirectory);
+
+    const obsoleteGuessItCacheDirectory = path.join(
+      tempPath,
+      "custom-obsolete-guessit-cache"
+    );
+    fs.mkdirSync(obsoleteGuessItCacheDirectory);
+    const obsoleteGuessItCachePath = path.join(
+      obsoleteGuessItCacheDirectory,
+      "H5P.GuessIt.h5p"
+    );
+    const obsoleteGuessItZip = await JSZip.loadAsync(
+      fs.readFileSync(
+        path.join(
+          projectRoot,
+          "content-type-cache",
+          "H5P.GuessIt.h5p"
+        )
+      )
+    );
+    const obsoleteGuessItDefinitionPath =
+      "H5P.GuessIt-1.7/library.json";
+    const obsoleteGuessItDefinition = JSON.parse(
+      await obsoleteGuessItZip
+        .file(obsoleteGuessItDefinitionPath)
+        .async("text")
+    );
+    obsoleteGuessItDefinition.patchVersion = 0;
+    obsoleteGuessItZip.file(
+      obsoleteGuessItDefinitionPath,
+      JSON.stringify(obsoleteGuessItDefinition)
+    );
+    for (const entryName of Object.keys(obsoleteGuessItZip.files)) {
+      if (obsoleteGuessItZip.files[entryName].dir) {
+        delete obsoleteGuessItZip.files[entryName];
+      }
+    }
+    obsoleteGuessItZip.file(
+      "H5PEditor.VerticalTabs-1.3/styles/",
+      null,
+      { createFolders: false, dir: true }
+    );
+    const obsoleteGuessItBytes = await obsoleteGuessItZip.generateAsync({
+      type: "nodebuffer",
+      compression: "DEFLATE",
+      compressionOptions: { level: 1 },
+    });
+    fs.writeFileSync(obsoleteGuessItCachePath, obsoleteGuessItBytes);
+    await assert.rejects(
+      H5pPackage.createFromHub(
+        "H5P.GuessIt",
+        "en",
+        settingsFor(
+          obsoleteGuessItCacheDirectory,
+          createGuessItSource("/custom/status/500", "0".repeat(64))
+        )
+      ),
+      /forbidden ZIP directory entry "H5PEditor\.VerticalTabs-1\.3\/styles\/".*Remove the cached file and retry/
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(obsoleteGuessItCachePath),
+      obsoleteGuessItBytes
+    );
+    assertNoAcquisitionResidue(obsoleteGuessItCacheDirectory);
 
     const corruptCacheDirectory = path.join(
       tempPath,
