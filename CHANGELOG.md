@@ -2,7 +2,7 @@
 
 Notable changes to h5p-cli-creator are documented here.
 
-## Unreleased
+## 0.4.2 - 2026-07-30
 
 ### Fixed
 
