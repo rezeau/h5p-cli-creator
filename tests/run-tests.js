@@ -623,7 +623,14 @@ async function testLibraryBundle(tempPath) {
   const { zip, metadata, content } = await assertFullPackage(outputPath);
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
   assert.deepStrictEqual(content, { questions: [] });
-  assert.ok(zip.file("H5P.GuessIt-1.7/library.json"));
+  const guessItDefinition = await readJson(
+    zip,
+    "H5P.GuessIt-1.7/library.json"
+  );
+  assert.strictEqual(guessItDefinition.machineName, "H5P.GuessIt");
+  assert.strictEqual(guessItDefinition.majorVersion, 1);
+  assert.strictEqual(guessItDefinition.minorVersion, 7);
+  assert.strictEqual(guessItDefinition.patchVersion, 1);
   assert.ok(zip.file("H5P.Timer-0.4/library.json"));
   assert.ok(zip.file("H5P.Question-1.5/library.json"));
   assertGuessItDevelopmentArtifactsAbsent(zip);
@@ -835,14 +842,14 @@ async function testPinnedCustomPackageSources(tempPath) {
       },
       {
         machineName: "H5P.GuessIt",
-        version: { major: 1, minor: 7, patch: 0 },
+        version: { major: 1, minor: 7, patch: 1 },
         cacheFilename: "H5P.GuessIt.h5p",
         downloadUrl:
           "https://github.com/rezeau/h5p-guessit-papijo/releases/" +
-          "download/v1.7.0/H5P.GuessIt-1.7.0.h5p",
+          "download/v1.7.1/H5P.GuessIt-1.7.1.h5p",
         expectedLibraryDirectory: "H5P.GuessIt-1.7",
         sha256:
-          "04B987E8C20D2E76FD21DC8A4CDF5926FF3E20AC889BE9A98CB75872B57A968A",
+          "48F3232D7A039F147369BF4A0B533C574229FE095ACCA4A87CC882B7DE806E17",
       },
     ]
   );
@@ -850,7 +857,7 @@ async function testPinnedCustomPackageSources(tempPath) {
   const fixtureServer = await startHttpFixtureServer();
   let fixtureServerStopped = false;
   const papiJoVersion = { major: 1, minor: 17, patch: 1 };
-  const guessItVersion = { major: 1, minor: 7, patch: 0 };
+  const guessItVersion = { major: 1, minor: 7, patch: 1 };
   const createPapiJoSource = (endpoint, sha256) =>
     createTestCustomSource(
       "H5P.DialogcardsPapiJo",
