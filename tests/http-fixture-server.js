@@ -26,9 +26,25 @@ function sha256(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex").toUpperCase();
 }
 
-async function modifyPackage(sourceBytes, libraryPath, modify) {
+async function modifyPackage(
+  sourceBytes,
+  libraryPath,
+  modify,
+  explicitDirectoryEntry
+) {
   const zip = await JSZip.loadAsync(sourceBytes);
   await modify(zip, libraryPath);
+  for (const entryName of Object.keys(zip.files)) {
+    if (zip.files[entryName].dir) {
+      delete zip.files[entryName];
+    }
+  }
+  if (explicitDirectoryEntry) {
+    zip.file(explicitDirectoryEntry, null, {
+      createFolders: false,
+      dir: true,
+    });
+  }
   return zip.generateAsync({
     type: "nodebuffer",
     compression: "DEFLATE",
@@ -100,6 +116,12 @@ async function createCustomPackageFixtures() {
       dialogcardsPapiJoPackageBytes,
       "H5P.DialogcardsPapiJo-1.17/library.json",
       async (zip) => zip.remove("H5PEditor.VerticalTabs-1.3")
+    ),
+    explicitDirectoryEntry: await modifyPackage(
+      dialogcardsPapiJoPackageBytes,
+      "H5PEditor.VerticalTabs-1.3/styles/",
+      async () => undefined,
+      "H5PEditor.VerticalTabs-1.3/styles/"
     ),
   };
   fixtures.hashes = Object.keys(fixtures).reduce((hashes, name) => {
@@ -295,6 +317,14 @@ const server = http.createServer((request, response) => {
         200,
         "application/octet-stream",
         customPackageFixtures.missingEditor
+      );
+      return;
+    case "/custom/explicit-directory-entry.h5p":
+      sendBytes(
+        response,
+        200,
+        "application/octet-stream",
+        customPackageFixtures.explicitDirectoryEntry
       );
       return;
     case "/custom/html":

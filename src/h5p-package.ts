@@ -333,8 +333,9 @@ export class H5pPackage {
     cachedPackage: boolean,
     downloadedPackage: boolean = false
   ): Promise<jszip> {
+    let packageZip: jszip;
     try {
-      return await jszip.loadAsync(dataBuffer);
+      packageZip = await jszip.loadAsync(dataBuffer);
     } catch (error) {
       if (cachedPackage) {
         throw new Error(
@@ -350,6 +351,40 @@ export class H5pPackage {
         `Could not open ${description}: ${this.errorMessage(error)}`
       );
     }
+    this.validateNoExplicitDirectoryEntries(
+      packageZip,
+      packagePath,
+      cachedPackage,
+      downloadedPackage
+    );
+    return packageZip;
+  }
+
+  private validateNoExplicitDirectoryEntries(
+    packageZip: jszip,
+    packagePath: string,
+    cachedPackage: boolean,
+    downloadedPackage: boolean
+  ): void {
+    const directoryEntry = Object.keys(packageZip.files).find(
+      entryName => packageZip.files[entryName].dir
+    );
+    if (!directoryEntry) {
+      return;
+    }
+
+    const description = cachedPackage
+      ? `Cached H5P package ${packagePath}`
+      : downloadedPackage
+      ? `Downloaded H5P package for ${this.contentTypeName}`
+      : `H5P package ${packagePath}`;
+    const recovery = cachedPackage
+      ? " Remove the cached file and retry."
+      : "";
+    throw new Error(
+      `${description} contains forbidden ZIP directory entry "${directoryEntry}". ` +
+        `H5P packages must contain file entries only.${recovery}`
+    );
   }
 
   private async publishPendingDownload(language: string): Promise<void> {
