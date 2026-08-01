@@ -2,6 +2,25 @@
 
 Notable changes to h5p-cli-creator are documented here.
 
+## 0.4.4 - 2026-08-01
+
+### Changed
+
+- Replaced deprecated and broken TSLint with ESLint 10 using flat configuration.
+- Added a passing production TypeScript lint command.
+- Added explicit build and lint checks to GitHub Actions.
+- Preserved the existing Windows/Ubuntu and Node 22/24 CI matrix.
+
+### Security
+
+- Removed the vulnerable dependency path previously introduced through TSLint: TSLint → glob/minimatch → brace-expansion.
+- npm audit now reports zero vulnerabilities.
+
+### Compatibility
+
+- No production-source or test-source behaviour changed.
+- Existing CLI commands, CSV formats, generated H5P packages, and custom library acquisition remain unchanged.
+
 ## 0.4.3 - 2026-08-01
 
 ### Changed
