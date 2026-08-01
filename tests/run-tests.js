@@ -1,4 +1,5 @@
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -361,15 +362,65 @@ function assertDependency(metadata, machineName, majorVersion, minorVersion) {
 function assertGuessItDevelopmentArtifactsAbsent(zip) {
   const entries = Object.keys(zip.files);
   assert.strictEqual(
-    entries.some((entry) => entry.startsWith("H5P.GuessIt-1.7/tests/")),
+    entries.some((entry) => entry.startsWith("H5P.GuessIt-1.8/tests/")),
     false,
     "GuessIt output must not contain its library test directory"
   );
-  assert.strictEqual(zip.file("H5P.GuessIt-1.7/AGENTS.md"), null);
+  assert.strictEqual(zip.file("H5P.GuessIt-1.8/AGENTS.md"), null);
   assert.strictEqual(
-    zip.file("H5P.GuessIt-1.7/WORDLE-FRENCH-ACCENTS.md"),
+    zip.file("H5P.GuessIt-1.8/WORDLE-FRENCH-ACCENTS.md"),
     null
   );
+}
+
+async function assertGuessItLibraryVersion(zip) {
+  const definition = await readJson(zip, "H5P.GuessIt-1.8/library.json");
+  assert.strictEqual(definition.machineName, "H5P.GuessIt");
+  assert.strictEqual(definition.majorVersion, 1);
+  assert.strictEqual(definition.minorVersion, 8);
+  assert.strictEqual(definition.patchVersion, 0);
+}
+
+function sha256(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex").toUpperCase();
+}
+
+async function createGuessItPackageVersion(
+  sourceBytes,
+  minorVersion,
+  patchVersion,
+  directoryMinorVersion = minorVersion
+) {
+  const sourceZip = await JSZip.loadAsync(sourceBytes);
+  const outputZip = new JSZip();
+  const targetDirectory = `H5P.GuessIt-1.${directoryMinorVersion}`;
+  for (const entryName of Object.keys(sourceZip.files)) {
+    const entry = sourceZip.files[entryName];
+    if (entry.dir) {
+      continue;
+    }
+    const targetEntry = entryName.replace(
+      /^H5P\.GuessIt-1\.8\//,
+      `${targetDirectory}/`
+    );
+    outputZip.file(targetEntry, await entry.async("nodebuffer"), {
+      createFolders: false,
+    });
+  }
+  const definitionPath = `${targetDirectory}/library.json`;
+  const definition = JSON.parse(
+    await outputZip.file(definitionPath).async("text")
+  );
+  definition.minorVersion = minorVersion;
+  definition.patchVersion = patchVersion;
+  outputZip.file(definitionPath, JSON.stringify(definition), {
+    createFolders: false,
+  });
+  return outputZip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+    compressionOptions: { level: 1 },
+  });
 }
 
 async function assertMinimalPackage(packagePath, expectedMedia = {}) {
@@ -624,7 +675,7 @@ async function testLibraryBundle(tempPath) {
   assert.strictEqual(h5pPackage.h5pMetadata.mainLibrary, "H5P.GuessIt");
   assert.strictEqual(h5pPackage.h5pMetadata.title, "Guess It");
   assert.deepStrictEqual(h5pPackage.h5pMetadata.embedTypes, ["iframe"]);
-  assertDependency(h5pPackage.h5pMetadata, "H5P.GuessIt", 1, 7);
+  assertDependency(h5pPackage.h5pMetadata, "H5P.GuessIt", 1, 8);
   assertDependency(h5pPackage.h5pMetadata, "H5P.Timer", 0, 4);
   assertDependency(h5pPackage.h5pMetadata, "H5P.Question", 1, 5);
   assertDependency(h5pPackage.h5pMetadata, "H5P.Audio", 1, 5);
@@ -637,14 +688,7 @@ async function testLibraryBundle(tempPath) {
   const { zip, metadata, content } = await assertFullPackage(outputPath);
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
   assert.deepStrictEqual(content, { questions: [] });
-  const guessItDefinition = await readJson(
-    zip,
-    "H5P.GuessIt-1.7/library.json"
-  );
-  assert.strictEqual(guessItDefinition.machineName, "H5P.GuessIt");
-  assert.strictEqual(guessItDefinition.majorVersion, 1);
-  assert.strictEqual(guessItDefinition.minorVersion, 7);
-  assert.strictEqual(guessItDefinition.patchVersion, 1);
+  await assertGuessItLibraryVersion(zip);
   assert.ok(zip.file("H5P.Timer-0.4/library.json"));
   assert.ok(zip.file("H5P.Question-1.5/library.json"));
   assertGuessItDevelopmentArtifactsAbsent(zip);
@@ -856,14 +900,14 @@ async function testPinnedCustomPackageSources(tempPath) {
       },
       {
         machineName: "H5P.GuessIt",
-        version: { major: 1, minor: 7, patch: 1 },
+        version: { major: 1, minor: 8, patch: 0 },
         cacheFilename: "H5P.GuessIt.h5p",
         downloadUrl:
           "https://github.com/rezeau/h5p-guessit-papijo/releases/" +
-          "download/v1.7.1/H5P.GuessIt-1.7.1.h5p",
-        expectedLibraryDirectory: "H5P.GuessIt-1.7",
+          "download/v1.8.0/H5P.GuessIt-1.8.0.h5p",
+        expectedLibraryDirectory: "H5P.GuessIt-1.8",
         sha256:
-          "48F3232D7A039F147369BF4A0B533C574229FE095ACCA4A87CC882B7DE806E17",
+          "5B99436701E52BF22794F4A256A39CB88862F644EE2D0D7DD7C1136EAB857AEB",
       },
     ]
   );
@@ -871,7 +915,7 @@ async function testPinnedCustomPackageSources(tempPath) {
   const fixtureServer = await startHttpFixtureServer();
   let fixtureServerStopped = false;
   const papiJoVersion = { major: 1, minor: 17, patch: 1 };
-  const guessItVersion = { major: 1, minor: 7, patch: 1 };
+  const guessItVersion = { major: 1, minor: 8, patch: 0 };
   const createPapiJoSource = (endpoint, sha256) =>
     createTestCustomSource(
       "H5P.DialogcardsPapiJo",
@@ -886,7 +930,7 @@ async function testPinnedCustomPackageSources(tempPath) {
       "H5P.GuessIt",
       guessItVersion,
       "H5P.GuessIt.h5p",
-      "H5P.GuessIt-1.7",
+      "H5P.GuessIt-1.8",
       fixtureServer.baseUrl + endpoint,
       sha256
     );
@@ -899,6 +943,7 @@ async function testPinnedCustomPackageSources(tempPath) {
     timeoutMs: 2000,
   });
   let papiJoCacheDirectory;
+  let guessItCacheDirectory;
 
   try {
     papiJoCacheDirectory = path.join(tempPath, "custom-papijo-success");
@@ -954,7 +999,7 @@ async function testPinnedCustomPackageSources(tempPath) {
     assert.strictEqual(papiJoOutput.content.dialogs[0].text, "Acquired front");
     assertNoAcquisitionResidue(papiJoCacheDirectory);
 
-    const guessItCacheDirectory = path.join(
+    guessItCacheDirectory = path.join(
       tempPath,
       "custom-guessit-success"
     );
@@ -969,6 +1014,17 @@ async function testPinnedCustomPackageSources(tempPath) {
       "H5P.GuessIt",
       "en",
       guessItSettings
+    );
+    const guessItCachePath = path.join(
+      guessItCacheDirectory,
+      "H5P.GuessIt.h5p"
+    );
+    const trackedGuessItBytes = fs.readFileSync(
+      path.join(projectRoot, "content-type-cache", "H5P.GuessIt.h5p")
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(guessItCachePath),
+      trackedGuessItBytes
     );
     const sentenceCreator = new GuessItCreator(
       guessItPackage,
@@ -994,6 +1050,7 @@ async function testPinnedCustomPackageSources(tempPath) {
     await sentenceCreator.savePackage(sentenceOutputPath);
     const sentenceOutput = await assertFullPackage(sentenceOutputPath);
     assert.strictEqual(sentenceOutput.metadata.mainLibrary, "H5P.GuessIt");
+    await assertGuessItLibraryVersion(sentenceOutput.zip);
     assert.strictEqual(
       sentenceOutput.content.questions[0].sentence,
       "Acquired custom sentence"
@@ -1026,6 +1083,7 @@ async function testPinnedCustomPackageSources(tempPath) {
     );
     await wordleCreator.savePackage(wordleOutputPath);
     const wordleOutput = await assertFullPackage(wordleOutputPath);
+    await assertGuessItLibraryVersion(wordleOutput.zip);
     assert.strictEqual(wordleOutput.content.wordle, true);
     assert.strictEqual(wordleOutput.content.questionsW[0].sentence, "Paris");
     assertNoAcquisitionResidue(guessItCacheDirectory);
@@ -1083,6 +1141,69 @@ async function testPinnedCustomPackageSources(tempPath) {
       false
     );
     assertNoAcquisitionResidue(checksumCacheDirectory);
+
+    const guessItChecksumCacheDirectory = path.join(
+      tempPath,
+      "custom-guessit-checksum-mismatch"
+    );
+    await assert.rejects(
+      H5pPackage.createFromHub(
+        "H5P.GuessIt",
+        "en",
+        settingsFor(
+          guessItChecksumCacheDirectory,
+          createGuessItSource("/custom/guessit.h5p", "0".repeat(64))
+        )
+      ),
+      /checksum mismatch/
+    );
+    assert.strictEqual(
+      fs.existsSync(
+        path.join(guessItChecksumCacheDirectory, "H5P.GuessIt.h5p")
+      ),
+      false
+    );
+    assertNoAcquisitionResidue(guessItChecksumCacheDirectory);
+
+    const guessItStructureCases = [
+      {
+        name: "wrong-minor",
+        endpoint: "/custom/guessit-wrong-minor.h5p",
+        hashName: "guessItWrongMinor",
+        expectedError: /version 1\.7\.0 does not match expected 1\.8\.0/,
+      },
+      {
+        name: "wrong-patch",
+        endpoint: "/custom/guessit-wrong-patch.h5p",
+        hashName: "guessItWrongPatch",
+        expectedError: /version 1\.8\.1 does not match expected 1\.8\.0/,
+      },
+    ];
+    for (const structureCase of guessItStructureCases) {
+      const cacheDirectory = path.join(
+        tempPath,
+        `custom-guessit-${structureCase.name}`
+      );
+      await assert.rejects(
+        H5pPackage.createFromHub(
+          "H5P.GuessIt",
+          "en",
+          settingsFor(
+            cacheDirectory,
+            createGuessItSource(
+              structureCase.endpoint,
+              fixtureServer.packageHashes[structureCase.hashName]
+            )
+          )
+        ),
+        structureCase.expectedError
+      );
+      assert.strictEqual(
+        fs.existsSync(path.join(cacheDirectory, "H5P.GuessIt.h5p")),
+        false
+      );
+      assertNoAcquisitionResidue(cacheDirectory);
+    }
 
     const structureCases = [
       {
@@ -1246,11 +1367,62 @@ async function testPinnedCustomPackageSources(tempPath) {
       "en",
       settingsFor(
         preservedCacheDirectory,
-        createPapiJoSource("/custom/status/500", "0".repeat(64))
+        createPapiJoSource(
+          "/custom/status/500",
+          fixtureServer.packageHashes.dialogcardsPapiJo
+        )
       )
     );
     assert.deepStrictEqual(fs.readFileSync(preservedCachePath), preservedBytes);
     assertNoAcquisitionResidue(preservedCacheDirectory);
+
+    const cachedVersionCases = [
+      {
+        name: "wrong-minor",
+        minorVersion: 7,
+        patchVersion: 0,
+        expectedError: /version 1\.7\.0 does not match expected 1\.8\.0/,
+      },
+      {
+        name: "wrong-patch",
+        minorVersion: 8,
+        patchVersion: 1,
+        expectedError: /version 1\.8\.1 does not match expected 1\.8\.0/,
+      },
+    ];
+    for (const versionCase of cachedVersionCases) {
+      const cacheDirectory = path.join(
+        tempPath,
+        `custom-cached-guessit-${versionCase.name}`
+      );
+      fs.mkdirSync(cacheDirectory);
+      const cachePath = path.join(cacheDirectory, "H5P.GuessIt.h5p");
+      const cacheBytes = await createGuessItPackageVersion(
+        trackedGuessItBytes,
+        versionCase.minorVersion,
+        versionCase.patchVersion,
+        8
+      );
+      fs.writeFileSync(cachePath, cacheBytes);
+      await assert.rejects(
+        H5pPackage.createFromHub(
+          "H5P.GuessIt",
+          "en",
+          settingsFor(
+            cacheDirectory,
+            createGuessItSource("/custom/status/500", sha256(cacheBytes))
+          )
+        ),
+        (error) => {
+          assert.match(error.message, versionCase.expectedError);
+          assert.ok(error.message.includes(cachePath));
+          assert.match(error.message, /remove.*retry/i);
+          return true;
+        }
+      );
+      assert.deepStrictEqual(fs.readFileSync(cachePath), cacheBytes);
+      assertNoAcquisitionResidue(cacheDirectory);
+    }
 
     const obsoleteGuessItCacheDirectory = path.join(
       tempPath,
@@ -1261,42 +1433,11 @@ async function testPinnedCustomPackageSources(tempPath) {
       obsoleteGuessItCacheDirectory,
       "H5P.GuessIt.h5p"
     );
-    const obsoleteGuessItZip = await JSZip.loadAsync(
-      fs.readFileSync(
-        path.join(
-          projectRoot,
-          "content-type-cache",
-          "H5P.GuessIt.h5p"
-        )
-      )
+    const obsoleteGuessItBytes = await createGuessItPackageVersion(
+      trackedGuessItBytes,
+      7,
+      1
     );
-    const obsoleteGuessItDefinitionPath =
-      "H5P.GuessIt-1.7/library.json";
-    const obsoleteGuessItDefinition = JSON.parse(
-      await obsoleteGuessItZip
-        .file(obsoleteGuessItDefinitionPath)
-        .async("text")
-    );
-    obsoleteGuessItDefinition.patchVersion = 0;
-    obsoleteGuessItZip.file(
-      obsoleteGuessItDefinitionPath,
-      JSON.stringify(obsoleteGuessItDefinition)
-    );
-    for (const entryName of Object.keys(obsoleteGuessItZip.files)) {
-      if (obsoleteGuessItZip.files[entryName].dir) {
-        delete obsoleteGuessItZip.files[entryName];
-      }
-    }
-    obsoleteGuessItZip.file(
-      "H5PEditor.VerticalTabs-1.3/styles/",
-      null,
-      { createFolders: false, dir: true }
-    );
-    const obsoleteGuessItBytes = await obsoleteGuessItZip.generateAsync({
-      type: "nodebuffer",
-      compression: "DEFLATE",
-      compressionOptions: { level: 1 },
-    });
     fs.writeFileSync(obsoleteGuessItCachePath, obsoleteGuessItBytes);
     await assert.rejects(
       H5pPackage.createFromHub(
@@ -1307,13 +1448,50 @@ async function testPinnedCustomPackageSources(tempPath) {
           createGuessItSource("/custom/status/500", "0".repeat(64))
         )
       ),
-      /forbidden ZIP directory entry "H5PEditor\.VerticalTabs-1\.3\/styles\/".*Remove the cached file and retry/
+      (error) => {
+        assert.match(error.message, /checksum mismatch/);
+        assert.ok(error.message.includes(obsoleteGuessItCachePath));
+        assert.match(error.message, /remove.*retry/i);
+        return true;
+      }
     );
     assert.deepStrictEqual(
       fs.readFileSync(obsoleteGuessItCachePath),
       obsoleteGuessItBytes
     );
     assertNoAcquisitionResidue(obsoleteGuessItCacheDirectory);
+
+    const mismatchedChecksumCacheDirectory = path.join(
+      tempPath,
+      "custom-mismatched-guessit-checksum"
+    );
+    fs.mkdirSync(mismatchedChecksumCacheDirectory);
+    const mismatchedChecksumCachePath = path.join(
+      mismatchedChecksumCacheDirectory,
+      "H5P.GuessIt.h5p"
+    );
+    fs.writeFileSync(mismatchedChecksumCachePath, trackedGuessItBytes);
+    await assert.rejects(
+      H5pPackage.createFromHub(
+        "H5P.GuessIt",
+        "en",
+        settingsFor(
+          mismatchedChecksumCacheDirectory,
+          createGuessItSource("/custom/status/500", "0".repeat(64))
+        )
+      ),
+      (error) => {
+        assert.match(error.message, /checksum mismatch/);
+        assert.ok(error.message.includes(mismatchedChecksumCachePath));
+        assert.match(error.message, /remove.*retry/i);
+        return true;
+      }
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(mismatchedChecksumCachePath),
+      trackedGuessItBytes
+    );
+    assertNoAcquisitionResidue(mismatchedChecksumCacheDirectory);
 
     const corruptCacheDirectory = path.join(
       tempPath,
@@ -1356,6 +1534,45 @@ async function testPinnedCustomPackageSources(tempPath) {
       /HTTP 404/
     );
 
+    const concurrentGuessItCacheDirectory = path.join(
+      tempPath,
+      "custom-concurrent-guessit"
+    );
+    const concurrentGuessItSettings = settingsFor(
+      concurrentGuessItCacheDirectory,
+      createGuessItSource(
+        "/custom/guessit.h5p",
+        fixtureServer.packageHashes.guessIt
+      )
+    );
+    const concurrentGuessItPackages = await Promise.all([
+      H5pPackage.createFromHub(
+        "H5P.GuessIt",
+        "en",
+        concurrentGuessItSettings
+      ),
+      H5pPackage.createFromHub(
+        "H5P.GuessIt",
+        "en",
+        concurrentGuessItSettings
+      ),
+    ]);
+    assert.strictEqual(
+      concurrentGuessItPackages[0].h5pMetadata.mainLibrary,
+      "H5P.GuessIt"
+    );
+    assert.strictEqual(
+      concurrentGuessItPackages[1].h5pMetadata.mainLibrary,
+      "H5P.GuessIt"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(
+        path.join(concurrentGuessItCacheDirectory, "H5P.GuessIt.h5p")
+      ),
+      trackedGuessItBytes
+    );
+    assertNoAcquisitionResidue(concurrentGuessItCacheDirectory);
+
     await stopHttpFixtureServer(fixtureServer);
     fixtureServerStopped = true;
     const offlinePackage = await H5pPackage.createFromHub(
@@ -1374,6 +1591,89 @@ async function testPinnedCustomPackageSources(tempPath) {
       "H5P.DialogcardsPapiJo"
     );
     assertNoAcquisitionResidue(papiJoCacheDirectory);
+
+    const offlineGuessItSettings = settingsFor(
+      guessItCacheDirectory,
+      createGuessItSource(
+        "/custom/guessit.h5p",
+        fixtureServer.packageHashes.guessIt
+      )
+    );
+    const offlineSentencePackage = await H5pPackage.createFromHub(
+      "H5P.GuessIt",
+      "en",
+      offlineGuessItSettings
+    );
+    const offlineSentenceCreator = new GuessItCreator(
+      offlineSentencePackage,
+      [{ item: "Offline sentence" }],
+      {
+        mode: "sentence",
+        description: "Offline sentence",
+        caseSensitive: false,
+        maxTries: 6,
+        random: false,
+        showSolutions: false,
+        itemCountChoice: false,
+        audioDisplay: "correct",
+      },
+      tempPath
+    );
+    await offlineSentenceCreator.create();
+    const offlineSentencePath = path.join(
+      tempPath,
+      "custom-guessit-offline-sentence.h5p"
+    );
+    await offlineSentenceCreator.savePackage(offlineSentencePath);
+    const offlineSentenceOutput = await assertFullPackage(
+      offlineSentencePath
+    );
+    await assertGuessItLibraryVersion(offlineSentenceOutput.zip);
+    assert.strictEqual(
+      offlineSentenceOutput.content.questions[0].sentence,
+      "Offline sentence"
+    );
+
+    const offlineWordlePackage = await H5pPackage.createFromHub(
+      "H5P.GuessIt",
+      "en",
+      offlineGuessItSettings
+    );
+    const offlineWordleCreator = new GuessItCreator(
+      offlineWordlePackage,
+      [{ item: "Lyon" }],
+      {
+        mode: "wordle",
+        description: "Offline Wordle",
+        caseSensitive: false,
+        maxTries: 6,
+        random: false,
+        showSolutions: false,
+        itemCountChoice: false,
+        audioDisplay: "correct",
+      },
+      tempPath
+    );
+    await offlineWordleCreator.create();
+    const offlineWordlePath = path.join(
+      tempPath,
+      "custom-guessit-offline-wordle.h5p"
+    );
+    await offlineWordleCreator.savePackage(offlineWordlePath);
+    const offlineWordleOutput = await assertFullPackage(offlineWordlePath);
+    await assertGuessItLibraryVersion(offlineWordleOutput.zip);
+    assert.strictEqual(offlineWordleOutput.content.wordle, true);
+    assert.strictEqual(
+      offlineWordleOutput.content.questionsW[0].sentence,
+      "Lyon"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(
+        path.join(guessItCacheDirectory, "H5P.GuessIt.h5p")
+      ),
+      trackedGuessItBytes
+    );
+    assertNoAcquisitionResidue(guessItCacheDirectory);
   } finally {
     if (!fixtureServerStopped) {
       await stopHttpFixtureServer(fixtureServer);
@@ -1410,8 +1710,9 @@ async function testGuessItSentences(tempPath) {
 
   assert.strictEqual(metadata.title, "Regression GuessIt Sentences");
   assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
-  assertDependency(metadata, "H5P.GuessIt", 1, 7);
-  assert.ok(zip.file("H5P.GuessIt-1.7/library.json"));
+  assertDependency(metadata, "H5P.GuessIt", 1, 8);
+  assert.ok(zip.file("H5P.GuessIt-1.8/library.json"));
+  await assertGuessItLibraryVersion(zip);
   assertGuessItDevelopmentArtifactsAbsent(zip);
 
   assert.strictEqual(content.info, false);
@@ -1468,7 +1769,8 @@ async function testGuessItWordle(tempPath) {
   });
 
   assert.strictEqual(metadata.title, "Regression GuessIt Wordle");
-  assertDependency(metadata, "H5P.GuessIt", 1, 7);
+  assertDependency(metadata, "H5P.GuessIt", 1, 8);
+  await assertGuessItLibraryVersion(zip);
   assertGuessItDevelopmentArtifactsAbsent(zip);
   assert.strictEqual(content.wordle, true);
   assert.deepStrictEqual(content.questions, []);
@@ -1813,6 +2115,12 @@ async function testMinimalPackages(tempPath) {
       expectedMedia: {
         "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
       },
+      assertContent: ({ metadata, content }) => {
+        assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
+        assertDependency(metadata, "H5P.GuessIt", 1, 8);
+        assert.strictEqual(content.wordle, false);
+        assert.strictEqual(content.questions.length, 2);
+      },
     },
     {
       name: "GuessIt Wordle mode",
@@ -1825,6 +2133,12 @@ async function testMinimalPackages(tempPath) {
       ],
       expectedMedia: {
         "content/audios/0.mp3": fs.readFileSync(audioFixturePath),
+      },
+      assertContent: ({ metadata, content }) => {
+        assert.strictEqual(metadata.mainLibrary, "H5P.GuessIt");
+        assertDependency(metadata, "H5P.GuessIt", 1, 8);
+        assert.strictEqual(content.wordle, true);
+        assert.strictEqual(content.questionsW.length, 2);
       },
     },
   ];
@@ -1843,7 +2157,13 @@ async function testMinimalPackages(tempPath) {
     );
     assert.strictEqual(cliResult.status, 0);
     assert.strictEqual(cliResult.outputArchivePath, outputPath);
-    await assertMinimalPackage(outputPath, testCase.expectedMedia);
+    const minimalPackage = await assertMinimalPackage(
+      outputPath,
+      testCase.expectedMedia
+    );
+    if (testCase.assertContent) {
+      testCase.assertContent(minimalPackage);
+    }
   }
 }
 
@@ -1936,7 +2256,7 @@ async function testPackageErrors(tempPath) {
       "H5P.GuessIt",
       "zz"
     ),
-    /Language file zz\.json not found for library H5P\.GuessIt 1\.7/
+    /Language file zz\.json not found for library H5P\.GuessIt 1\.8/
   );
 
   const emptyArchive = new JSZip();

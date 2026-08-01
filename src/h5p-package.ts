@@ -49,6 +49,7 @@ export interface H5pPackageAcquisitionSettings {
 
 interface PendingCachePublication {
   cachePath: string;
+  customSource?: H5pPackageSource;
   sourceDescription: string;
   temporaryPath: string;
 }
@@ -217,12 +218,20 @@ export class H5pPackage {
       customSource && customSource.cacheFilename
     );
     if (await fsExtra.pathExists(cachePath)) {
+      const cachedPackage = await fsExtra.readFile(cachePath);
       this.cachedPackagePath = cachePath;
       this.packageZip = await this.openPackage(
-        await fsExtra.readFile(cachePath),
+        cachedPackage,
         cachePath,
         true
       );
+      if (customSource) {
+        await this.validateCachedCustomPackage(
+          cachedPackage,
+          cachePath,
+          customSource
+        );
+      }
       console.log(`Using cached content type package from ${cachePath}`);
       return;
     }
@@ -237,6 +246,7 @@ export class H5pPackage {
     const temporaryPath = this.createTemporaryPackagePath(cachePath);
     this.pendingCachePublication = {
       cachePath,
+      customSource,
       sourceDescription,
       temporaryPath
     };
@@ -247,7 +257,11 @@ export class H5pPackage {
     );
     const downloadedPackage = await fsExtra.readFile(temporaryPath);
     if (customSource) {
-      this.validateCustomPackageChecksum(downloadedPackage, customSource);
+      this.validateCustomPackageChecksum(
+        downloadedPackage,
+        customSource,
+        "Downloaded package"
+      );
     }
     this.packageZip = await this.openPackage(
       downloadedPackage,
@@ -256,7 +270,10 @@ export class H5pPackage {
       true
     );
     if (customSource) {
-      await this.validateCustomPackageStructure(customSource);
+      await this.validateCustomPackageStructure(
+        customSource,
+        "Downloaded package"
+      );
     }
   }
 
@@ -408,11 +425,19 @@ export class H5pPackage {
       }
 
       try {
+        const cachedPackage = await fsExtra.readFile(pending.cachePath);
         this.packageZip = await this.openPackage(
-          await fsExtra.readFile(pending.cachePath),
+          cachedPackage,
           pending.cachePath,
           true
         );
+        if (pending.customSource) {
+          await this.validateCachedCustomPackage(
+            cachedPackage,
+            pending.cachePath,
+            pending.customSource
+          );
+        }
         await this.initialize(language);
       } catch (cacheError) {
         throw new Error(
@@ -500,7 +525,8 @@ export class H5pPackage {
 
   private validateCustomPackageChecksum(
     dataBuffer: Buffer,
-    source: H5pPackageSource
+    source: H5pPackageSource,
+    packageDescription: string
   ): void {
     const actualChecksum = crypto
       .createHash("sha256")
@@ -510,14 +536,15 @@ export class H5pPackage {
     const expectedChecksum = source.sha256.toUpperCase();
     if (actualChecksum !== expectedChecksum) {
       throw new Error(
-        `Downloaded package checksum mismatch for ${source.machineName}: ` +
+        `${packageDescription} checksum mismatch for ${source.machineName}: ` +
           `expected ${expectedChecksum}, received ${actualChecksum}.`
       );
     }
   }
 
   private async validateCustomPackageStructure(
-    source: H5pPackageSource
+    source: H5pPackageSource,
+    packageDescription: string
   ): Promise<void> {
     const libraryJsonPath =
       `${source.expectedLibraryDirectory}/library.json`;
@@ -526,12 +553,12 @@ export class H5pPackage {
     const libraryEntry = this.packageZip.file(libraryJsonPath);
     if (!libraryEntry) {
       throw new Error(
-        `Downloaded package for ${source.machineName} is missing expected library definition ${libraryJsonPath}.`
+        `${packageDescription} for ${source.machineName} is missing expected library definition ${libraryJsonPath}.`
       );
     }
     if (!this.packageZip.file(semanticsPath)) {
       throw new Error(
-        `Downloaded package for ${source.machineName} is missing ${semanticsPath}.`
+        `${packageDescription} for ${source.machineName} is missing ${semanticsPath}.`
       );
     }
 
@@ -548,7 +575,7 @@ export class H5pPackage {
 
     if (definition.machineName !== source.machineName) {
       throw new Error(
-        `Downloaded package library name ${definition.machineName} does not match expected ${source.machineName}.`
+        `${packageDescription} library name ${definition.machineName} does not match expected ${source.machineName}.`
       );
     }
     if (
@@ -557,14 +584,14 @@ export class H5pPackage {
       definition.patchVersion !== source.version.patch
     ) {
       throw new Error(
-        `Downloaded package version ${definition.majorVersion}.${definition.minorVersion}.${definition.patchVersion} ` +
+        `${packageDescription} version ${definition.majorVersion}.${definition.minorVersion}.${definition.patchVersion} ` +
           `does not match expected ${source.version.major}.${source.version.minor}.${source.version.patch} ` +
           `for ${source.machineName}.`
       );
     }
     if (definition.runnable !== 1) {
       throw new Error(
-        `Downloaded package library ${source.machineName} must declare runnable as 1.`
+        `${packageDescription} library ${source.machineName} must declare runnable as 1.`
       );
     }
 
@@ -578,11 +605,16 @@ export class H5pPackage {
     );
     if (!mainLibrary) {
       throw new Error(
-        `Downloaded package contains no valid ${source.machineName} ` +
+        `${packageDescription} contains no valid ${source.machineName} ` +
           `${source.version.major}.${source.version.minor} library.`
       );
     }
-    this.validateCustomDependencyClosure(libraries, mainLibrary, source);
+    this.validateCustomDependencyClosure(
+      libraries,
+      mainLibrary,
+      source,
+      packageDescription
+    );
 
     const metadataEntry = this.packageZip.file("h5p.json");
     if (metadataEntry) {
@@ -598,7 +630,7 @@ export class H5pPackage {
         !Array.isArray(metadata.preloadedDependencies)
       ) {
         throw new Error(
-          `Downloaded package h5p.json does not identify compatible main library ${source.machineName}.`
+          `${packageDescription} h5p.json does not identify compatible main library ${source.machineName}.`
         );
       }
       const mainDependency = metadata.preloadedDependencies.find(
@@ -609,17 +641,42 @@ export class H5pPackage {
       );
       if (!mainDependency) {
         throw new Error(
-          `Downloaded package h5p.json does not declare compatible main library ` +
+          `${packageDescription} h5p.json does not declare compatible main library ` +
             `${source.machineName} ${source.version.major}.${source.version.minor}.`
         );
       }
     }
   }
 
+  private async validateCachedCustomPackage(
+    dataBuffer: Buffer,
+    cachePath: string,
+    source: H5pPackageSource
+  ): Promise<void> {
+    const packageDescription = `Cached H5P package ${cachePath}`;
+    try {
+      this.validateCustomPackageChecksum(
+        dataBuffer,
+        source,
+        packageDescription
+      );
+      await this.validateCustomPackageStructure(
+        source,
+        packageDescription
+      );
+    } catch (error) {
+      throw new Error(
+        `${this.errorMessage(error)} Remove the stale or mismatched cache file ` +
+          `${cachePath} and retry.`
+      );
+    }
+  }
+
   private validateCustomDependencyClosure(
     libraries: H5pLibraryRecord[],
     mainLibrary: H5pLibraryRecord,
-    source: H5pPackageSource
+    source: H5pPackageSource,
+    packageDescription: string
   ): void {
     const visited = new Set<string>();
     const visit = (library: H5pLibraryRecord) => {
@@ -658,7 +715,7 @@ export class H5pPackage {
           );
           if (!dependencyLibrary) {
             throw new Error(
-              `Downloaded package for ${source.machineName} is missing ` +
+              `${packageDescription} for ${source.machineName} is missing ` +
                 `${group.name} dependency ${dependency.machineName} ` +
                 `${dependency.majorVersion}.${dependency.minorVersion} ` +
                 `required by ${library.definition.machineName}.`
