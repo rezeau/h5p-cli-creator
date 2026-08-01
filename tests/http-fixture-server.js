@@ -52,8 +52,12 @@ async function modifyPackage(
   });
 }
 
-async function changeLibraryDefinition(sourceBytes, property, value) {
-  const libraryPath = "H5P.DialogcardsPapiJo-1.17/library.json";
+async function changeLibraryDefinitionAt(
+  sourceBytes,
+  libraryPath,
+  property,
+  value
+) {
   return modifyPackage(sourceBytes, libraryPath, async (zip) => {
     const definition = JSON.parse(await zip.file(libraryPath).async("text"));
     definition[property] = value;
@@ -61,10 +65,31 @@ async function changeLibraryDefinition(sourceBytes, property, value) {
   });
 }
 
+async function changeLibraryDefinition(sourceBytes, property, value) {
+  return changeLibraryDefinitionAt(
+    sourceBytes,
+    "H5P.DialogcardsPapiJo-1.17/library.json",
+    property,
+    value
+  );
+}
+
 async function createCustomPackageFixtures() {
   const fixtures = {
     dialogcardsPapiJo: dialogcardsPapiJoPackageBytes,
     guessIt: guessItPackageBytes,
+    guessItWrongMinor: await changeLibraryDefinitionAt(
+      guessItPackageBytes,
+      "H5P.GuessIt-1.8/library.json",
+      "minorVersion",
+      7
+    ),
+    guessItWrongPatch: await changeLibraryDefinitionAt(
+      guessItPackageBytes,
+      "H5P.GuessIt-1.8/library.json",
+      "patchVersion",
+      1
+    ),
     wrongLibrary: await changeLibraryDefinition(
       dialogcardsPapiJoPackageBytes,
       "machineName",
@@ -239,6 +264,22 @@ const server = http.createServer((request, response) => {
         200,
         "application/octet-stream",
         customPackageFixtures.guessIt
+      );
+      return;
+    case "/custom/guessit-wrong-minor.h5p":
+      sendBytes(
+        response,
+        200,
+        "application/octet-stream",
+        customPackageFixtures.guessItWrongMinor
+      );
+      return;
+    case "/custom/guessit-wrong-patch.h5p":
+      sendBytes(
+        response,
+        200,
+        "application/octet-stream",
+        customPackageFixtures.guessItWrongPatch
       );
       return;
     case "/custom/redirect-dialogcards-papijo.h5p":

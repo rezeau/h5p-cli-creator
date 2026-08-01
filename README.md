@@ -76,7 +76,7 @@ Reads the file `h6c4.csv` in the `tests` directory and outputs a h5p file with t
 
 `node ./dist/index.js guessit ./tests/fixtures/guessit-sentences.csv ./guessit-sentences.h5p -n="Guess the sentences" --description="Enter the missing sentence"`
 
-Creates sentence-mode `H5P.GuessIt` 1.7.1 content. To create a Wordle-mode activity instead, use `--mode=wordle`, for example:
+Creates sentence-mode `H5P.GuessIt` 1.8.0 content. To create a Wordle-mode activity instead, use `--mode=wordle`, for example:
 
 `node ./dist/index.js guessit ./tests/fixtures/guessit-wordle-regression.csv ./guessit-wordle.h5p -n="Guess the words" --mode=wordle --max-tries=8`
 
@@ -91,7 +91,7 @@ item;tip;audio
 
 `item` is required. `tip` and `audio` are optional. Audio can be a local path relative to the CSV file or an HTTP/HTTPS URL.
 
-Sentence mode accepts any non-empty item. Wordle mode requires a single word containing 4 to 8 letters supported by GuessIt 1.7.1; spaces, digits, punctuation, and unsupported characters are rejected before a package is created.
+Sentence mode accepts any non-empty item. Wordle mode requires a single word containing 4 to 8 letters supported by GuessIt 1.8.0; spaces, digits, punctuation, and unsupported characters are rejected before a package is created.
 
 GuessIt options include:
 
@@ -130,7 +130,7 @@ The `content-type-cache` directory contains pinned H5P packages used by the comm
 When an official package is absent, the loader retains its existing H5P Hub fallback. The following third-party packages instead have versioned, checksum-pinned GitHub Release sources:
 
 - `H5P.DialogcardsPapiJo` 1.17.1 is stored as `content-type-cache/H5P.DialogcardsPapiJo.h5p` and retrieved from the [v1.17.1 release](https://github.com/rezeau/h5p-dialogcards-papijo/releases/tag/v1.17.1), with SHA-256 `E6AE57451E3A898D3693871C149F2528523DFDD869D0A6F84EE5347D7CDA38EB`.
-- `H5P.GuessIt` 1.7.1 is stored as `content-type-cache/H5P.GuessIt.h5p` and retrieved from the [v1.7.1 release](https://github.com/rezeau/h5p-guessit-papijo/releases/tag/v1.7.1), with SHA-256 `48F3232D7A039F147369BF4A0B533C574229FE095ACCA4A87CC882B7DE806E17`.
+- `H5P.GuessIt` 1.8.0 is stored as `content-type-cache/H5P.GuessIt.h5p` and retrieved from the [v1.8.0 release](https://github.com/rezeau/h5p-guessit-papijo/releases/tag/v1.8.0), with SHA-256 `5B99436701E52BF22794F4A256A39CB88862F644EE2D0D7DD7C1136EAB857AEB`.
 
 Downloads use bounded redirects, a timeout, and a maximum response size. A package is written to a temporary file in the cache directory, then its checksum, ZIP structure, library identity and version, runnable metadata, semantics, and dependency graph are validated before it is published atomically under the canonical cache filename. Failed downloads and validations leave no cache entry. A successfully cached package is reused on later runs, including offline runs.
 
